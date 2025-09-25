@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import random
+import signal
 import subprocess
 import time
 
@@ -22,6 +23,15 @@ logging.basicConfig(
 CLEAR_SCREEN = "\033[2J\033[H"
 CURSOR_HOME = "\033[H"
 CLEAR_LINE = "\033[K"
+
+
+_needs_full_refresh = False
+
+
+def _handle_resize(signum, frame):
+    """Signal handler that flags the need for a full terminal refresh."""
+    global _needs_full_refresh
+    _needs_full_refresh = True
 
 
 def clear_terminal():
@@ -135,7 +145,11 @@ def run_ping():
 
 
 def main():
+    global _needs_full_refresh
+
     clear_terminal()
+    _needs_full_refresh = False
+    signal.signal(signal.SIGWINCH, _handle_resize)
 
     # Take an initial snapshot of CPU times
     prev_idle, prev_total = read_cpu_times()
@@ -151,6 +165,10 @@ def main():
             time.sleep(1)
 
             now = time.monotonic()
+
+            if _needs_full_refresh:
+                clear_terminal()
+                _needs_full_refresh = False
 
             # Calculate CPU usage
             idle, total = read_cpu_times()
