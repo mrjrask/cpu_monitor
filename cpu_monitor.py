@@ -74,6 +74,28 @@ def read_network_bytes():
     return total_rx, total_tx
 
 
+def read_memory_usage():
+    """Return total and used memory in bytes."""
+    mem_total = None
+    mem_available = None
+
+    with open("/proc/meminfo", "r") as f:
+        for line in f:
+            if line.startswith("MemTotal:"):
+                mem_total = int(line.split()[1]) * 1024
+            elif line.startswith("MemAvailable:"):
+                mem_available = int(line.split()[1]) * 1024
+
+            if mem_total is not None and mem_available is not None:
+                break
+
+    if mem_total is None or mem_available is None:
+        raise RuntimeError("Unable to read memory information from /proc/meminfo")
+
+    mem_used = max(mem_total - mem_available, 0)
+    return mem_total, mem_used
+
+
 def color_for_cpu(usage):
     """ANSI color based on CPU usage %."""
     if usage >= 90.0:
@@ -102,6 +124,16 @@ def format_bytes_per_sec(num_bytes_per_sec):
     """Return a human-friendly string for a bytes/sec value."""
     units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
     value = float(max(num_bytes_per_sec, 0.0))
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:7.2f} {unit}"
+        value /= 1024.0
+
+
+def format_bytes(num_bytes):
+    """Return a human-friendly string for a byte value."""
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    value = float(max(num_bytes, 0.0))
     for unit in units:
         if value < 1024.0 or unit == units[-1]:
             return f"{value:7.2f} {unit}"
@@ -181,6 +213,10 @@ def main():
             temp_c = get_cpu_temp()
             temp_f = (temp_c * 9/5) + 32
 
+            # Read memory usage
+            mem_total_bytes, mem_used_bytes = read_memory_usage()
+            mem_used_percent = (mem_used_bytes / mem_total_bytes) * 100.0 if mem_total_bytes else 0.0
+
             # Calculate network throughput
             rx_bytes, tx_bytes = read_network_bytes()
             elapsed = now - prev_time
@@ -200,6 +236,7 @@ def main():
             log_parts = [
                 f"Temp: {temp_c:.2f}°C/{temp_f:.2f}°F",
                 f"CPU: {cpu_usage:.1f}%",
+                f"Mem: {mem_used_percent:.1f}% ({format_bytes(mem_used_bytes).strip()} used of {format_bytes(mem_total_bytes).strip()})",
                 f"Net: ↑ {format_bytes_per_sec(tx_rate).strip()} ↓ {format_bytes_per_sec(rx_rate).strip()}",
             ]
             if last_ping_error:
@@ -231,6 +268,11 @@ def main():
             )
             print(
                 f"CPU Usage: {cpu_col}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}"
+            )
+            print(
+                "Memory: "
+                f"{format_bytes(mem_used_bytes)} used / {format_bytes(mem_total_bytes)} "
+                f"({mem_used_percent:5.1f}%){CLEAR_LINE}"
             )
             print(
                 f"Network: ↑ {upload_display}   ↓ {download_display}{CLEAR_LINE}"
