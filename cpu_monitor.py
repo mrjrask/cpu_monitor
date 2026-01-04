@@ -4,6 +4,7 @@ import random
 import signal
 import subprocess
 import time
+from glob import glob
 
 # ANSI color codes
 RESET   = "\033[0m"
@@ -44,6 +45,26 @@ def get_cpu_temp():
     with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
         millideg = int(f.read().strip())
     return millideg / 1000.0
+
+
+def read_fan_speed_rpm():
+    """Return the first detected fan speed in RPM, or None if unavailable."""
+    fan_paths = [
+        "/sys/devices/platform/cooling_fan/hwmon/hwmon*/fan1_input",  # Raspberry Pi 5
+        "/sys/class/hwmon/hwmon*/fan1_input",  # Fallback for other systems
+    ]
+
+    for pattern in fan_paths:
+        for path in glob(pattern):
+            try:
+                with open(path, "r") as f:
+                    rpm = int(f.read().strip())
+                if rpm >= 0:
+                    return rpm
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+
+    return None
 
 
 def read_cpu_times():
@@ -213,6 +234,9 @@ def main():
             temp_c = get_cpu_temp()
             temp_f = (temp_c * 9/5) + 32
 
+            # Read fan speed (if available)
+            fan_rpm = read_fan_speed_rpm()
+
             # Read memory usage
             mem_total_bytes, mem_used_bytes = read_memory_usage()
             mem_used_percent = (mem_used_bytes / mem_total_bytes) * 100.0 if mem_total_bytes else 0.0
@@ -239,6 +263,7 @@ def main():
                 f"Mem: {mem_used_percent:.1f}% ({format_bytes(mem_used_bytes).strip()} used of {format_bytes(mem_total_bytes).strip()})",
                 f"Net: ↑ {format_bytes_per_sec(tx_rate).strip()} ↓ {format_bytes_per_sec(rx_rate).strip()}",
             ]
+            log_parts.append(f"Fan: {fan_rpm} RPM" if fan_rpm is not None else "Fan: N/A")
             if last_ping_error:
                 log_parts.append(f"Ping error: {last_ping_error}")
             elif last_ping_avg is not None:
@@ -254,6 +279,7 @@ def main():
             # Prepare display values
             upload_display = format_bytes_per_sec(tx_rate)
             download_display = format_bytes_per_sec(rx_rate)
+            fan_display = f"{fan_rpm} RPM" if fan_rpm is not None else "N/A"
             if last_ping_error:
                 ping_display = f"ERROR - {last_ping_error}"
             elif last_ping_avg is None:
@@ -265,6 +291,9 @@ def main():
             print(CURSOR_HOME, end="")
             print(
                 f"CPU Temp: {temp_col}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}"
+            )
+            print(
+                f"Fan Speed: {fan_display}{CLEAR_LINE}"
             )
             print(
                 f"CPU Usage: {cpu_col}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}"
