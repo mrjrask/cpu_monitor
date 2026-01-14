@@ -4,6 +4,7 @@ import random
 import signal
 import subprocess
 import time
+import shutil
 from glob import glob
 
 # ANSI color codes
@@ -115,6 +116,13 @@ def read_memory_usage():
 
     mem_used = max(mem_total - mem_available, 0)
     return mem_total, mem_used
+
+
+def read_storage_usage(path="/"):
+    """Return total and used storage in bytes for the given path."""
+    usage = shutil.disk_usage(path)
+    storage_used = max(usage.total - usage.free, 0)
+    return usage.total, storage_used
 
 
 def color_for_cpu(usage):
@@ -241,6 +249,12 @@ def main():
             mem_total_bytes, mem_used_bytes = read_memory_usage()
             mem_used_percent = (mem_used_bytes / mem_total_bytes) * 100.0 if mem_total_bytes else 0.0
 
+            # Read storage usage
+            storage_total_bytes, storage_used_bytes = read_storage_usage("/")
+            storage_used_percent = (
+                (storage_used_bytes / storage_total_bytes) * 100.0 if storage_total_bytes else 0.0
+            )
+
             # Calculate network throughput
             rx_bytes, tx_bytes = read_network_bytes()
             elapsed = now - prev_time
@@ -261,6 +275,7 @@ def main():
                 f"Temp: {temp_c:.2f}°C/{temp_f:.2f}°F",
                 f"CPU: {cpu_usage:.1f}%",
                 f"Mem: {mem_used_percent:.1f}% ({format_bytes(mem_used_bytes).strip()} used of {format_bytes(mem_total_bytes).strip()})",
+                f"Storage: {storage_used_percent:.1f}% ({format_bytes(storage_used_bytes).strip()} used of {format_bytes(storage_total_bytes).strip()})",
                 f"Net: ↑ {format_bytes_per_sec(tx_rate).strip()} ↓ {format_bytes_per_sec(rx_rate).strip()}",
             ]
             log_parts.append(f"Fan: {fan_rpm} RPM" if fan_rpm is not None else "Fan: N/A")
@@ -302,6 +317,11 @@ def main():
                 "Memory: "
                 f"{format_bytes(mem_used_bytes)} used / {format_bytes(mem_total_bytes)} "
                 f"({mem_used_percent:5.1f}%){CLEAR_LINE}"
+            )
+            print(
+                "Storage: "
+                f"{format_bytes(storage_used_bytes)} used / {format_bytes(storage_total_bytes)} "
+                f"({storage_used_percent:5.1f}%){CLEAR_LINE}"
             )
             print(
                 f"Network: ↑ {upload_display}   ↓ {download_display}{CLEAR_LINE}"
