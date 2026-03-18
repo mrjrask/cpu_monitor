@@ -444,18 +444,18 @@ def main():
                 next_network_details_time = now + 5
 
             print(CURSOR_HOME, end="")
-            print(f"Hostname: {hostname}{CLEAR_LINE}")
-            print(f"CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
-            print(f"Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
+            print(f"🖥️ Hostname: {hostname}{CLEAR_LINE}")
+            print(f"🌡️ CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
+            print(f"🌀 Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
             gpu_text = f"{gpu_usage:5.1f}%" if gpu_usage is not None else "N/A"
             print(
-                f"CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}  /   GPU: {gpu_text}{CLEAR_LINE}"
+                f"⚙️ CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}  /   🎮 GPU: {gpu_text}{CLEAR_LINE}"
             )
-            print(f"Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
-            print(f"Storage: {format_bytes(stor_used)} / {format_bytes(stor_total)} ({stor_pct:5.1f}%){CLEAR_LINE}")
-            print(f"Network: ↑ {format_bytes_per_sec(tx_rate)}   ↓ {format_bytes_per_sec(rx_rate)}{CLEAR_LINE}")
+            print(f"🧠 Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
+            print(f"💾 Storage: {format_bytes(stor_used)} / {format_bytes(stor_total)} ({stor_pct:5.1f}%){CLEAR_LINE}")
+            print(f"🌐 Network: ↑ {format_bytes_per_sec(tx_rate)}   ↓ {format_bytes_per_sec(rx_rate)}{CLEAR_LINE}")
             print(
-                f"Connection: {connection_type or 'Unknown'}"
+                f"🔌 Connection: {connection_type or 'Unknown'}"
                 f"{f' ({active_interface})' if active_interface else ''}{CLEAR_LINE}"
             )
             if connection_type == "Wi-Fi":
@@ -464,7 +464,7 @@ def main():
                     if wifi_details["signal_dbm"] is not None and wifi_details["signal_quality"] is not None
                     else "N/A"
                 )
-                print(f"Wi-Fi Signal: {signal_text}{CLEAR_LINE}")
+                print(f"📶 Wi-Fi Signal: {signal_text}{CLEAR_LINE}")
                 width = wifi_details["channel_width_mhz"]
                 channel = wifi_details["channel"]
                 width_text = f" ({width} MHz)" if width else ""
@@ -473,12 +473,12 @@ def main():
                 wifi_type = wifi_details["wifi_standard"]
                 freq_text = f" ({frequency} MHz)" if frequency else ""
                 wifi_type_text = f"802.11{wifi_type}{freq_text}" if wifi_type else "N/A"
-                print(f"Wi-Fi Channel/Type: {channel_text}  /   {wifi_type_text}{CLEAR_LINE}")
+                print(f"📡 Wi-Fi Channel/Type: {channel_text}  /   {wifi_type_text}{CLEAR_LINE}")
             else:
-                print(f"Wi-Fi Signal: N/A{CLEAR_LINE}")
-                print(f"Wi-Fi Channel/Type: N/A  /   N/A{CLEAR_LINE}")
+                print(f"📶 Wi-Fi Signal: N/A{CLEAR_LINE}")
+                print(f"📡 Wi-Fi Channel/Type: N/A  /   N/A{CLEAR_LINE}")
             print(
-                f"Ping (avg of 3 to 1.1.1.1): "
+                f"🏓 Ping (avg of 3 to 1.1.1.1): "
                 f"{'ERROR - ' + last_ping_error if last_ping_error else f'{last_ping_avg:.2f} ms' if last_ping_avg else 'Pending...'}"
                 f"{CLEAR_LINE}",
                 end="",
