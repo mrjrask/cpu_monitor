@@ -516,13 +516,11 @@ def main():
                 width_text = f" ({width} MHz)" if width else ""
                 channel_text = f"{channel}{width_text}" if channel else "N/A"
                 frequency = wifi_details["frequency_mhz"]
-                wifi_type = wifi_details["wifi_standard"]
-                freq_text = f" ({frequency} MHz)" if frequency else ""
-                wifi_type_text = f"802.11{wifi_type}{freq_text}" if wifi_type else "N/A"
-                print(f"📡  Wi-Fi Channel/Type: {channel_text}  / {wifi_type_text}{CLEAR_LINE}")
+                frequency_text = f"{frequency} MHz" if frequency else "N/A"
+                print(f"📡  Wi-Fi Channel/Freq: {channel_text}  / {frequency_text}{CLEAR_LINE}")
             else:
                 print(f"📶  Wi-Fi Signal: N/A{CLEAR_LINE}")
-                print(f"📡  Wi-Fi Channel/Type: N/A  / N/A{CLEAR_LINE}")
+                print(f"📡  Wi-Fi Channel/Freq: N/A  / N/A{CLEAR_LINE}")
             print(
                 f"🏓  Ping (avg of 3 to 1.1.1.1): "
                 f"{'ERROR - ' + last_ping_error if last_ping_error else f'{last_ping_avg:.2f} ms' if last_ping_avg else 'Pending...'}"
