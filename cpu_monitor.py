@@ -273,13 +273,14 @@ def get_wifi_details(interface):
     """
     Return Wi-Fi details for a wireless interface.
 
-    Dict keys: signal_dbm, signal_quality, channel, channel_width_mhz, wifi_standard.
+    Dict keys: signal_dbm, signal_quality, channel, channel_width_mhz, frequency_mhz, wifi_standard.
     """
     details = {
         "signal_dbm": None,
         "signal_quality": None,
         "channel": None,
         "channel_width_mhz": None,
+        "frequency_mhz": None,
         "wifi_standard": None,
     }
     if not interface:
@@ -320,6 +321,9 @@ def get_wifi_details(interface):
         )
         if link_result.returncode == 0:
             details["wifi_standard"] = infer_wifi_standard_from_link(link_result.stdout)
+            freq_match = re.search(r"freq:\s*(\d+)", link_result.stdout, flags=re.IGNORECASE)
+            if freq_match:
+                details["frequency_mhz"] = freq_match.group(1)
     except Exception:
         pass
 
@@ -349,6 +353,7 @@ def main():
         "signal_quality": None,
         "channel": None,
         "channel_width_mhz": None,
+        "frequency_mhz": None,
         "wifi_standard": None,
     }
 
@@ -398,6 +403,7 @@ def main():
                             "signal_quality": None,
                             "channel": None,
                             "channel_width_mhz": None,
+                            "frequency_mhz": None,
                             "wifi_standard": None,
                         }
                 else:
@@ -407,6 +413,7 @@ def main():
                         "signal_quality": None,
                         "channel": None,
                         "channel_width_mhz": None,
+                        "frequency_mhz": None,
                         "wifi_standard": None,
                     }
                 next_network_details_time = now + 5
@@ -430,14 +437,17 @@ def main():
                     else "N/A"
                 )
                 print(f"Wi-Fi Signal: {signal_text}{CLEAR_LINE}")
-                print(f"Wi-Fi Channel: {wifi_details['channel'] or 'N/A'}{CLEAR_LINE}")
                 width = wifi_details["channel_width_mhz"]
-                print(f"Wi-Fi Width: {f'{width} MHz' if width else 'N/A'}{CLEAR_LINE}")
-                print(f"Wi-Fi Type: {wifi_details['wifi_standard'] or 'N/A'}{CLEAR_LINE}")
+                channel = wifi_details["channel"]
+                width_text = f" ({width} MHz)" if width else ""
+                print(f"Wi-Fi Channel: {f'{channel}{width_text}' if channel else 'N/A'}{CLEAR_LINE}")
+                frequency = wifi_details["frequency_mhz"]
+                wifi_type = wifi_details["wifi_standard"]
+                freq_text = f" ({frequency} MHz)" if frequency else ""
+                print(f"Wi-Fi Type: {f'{wifi_type}{freq_text}' if wifi_type else 'N/A'}{CLEAR_LINE}")
             else:
                 print(f"Wi-Fi Signal: N/A{CLEAR_LINE}")
                 print(f"Wi-Fi Channel: N/A{CLEAR_LINE}")
-                print(f"Wi-Fi Width: N/A{CLEAR_LINE}")
                 print(f"Wi-Fi Type: N/A{CLEAR_LINE}")
             print(
                 f"Ping (avg of 3 to 1.1.1.1): "
