@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import logging
+import os
 import random
 import signal
 import subprocess
 import time
 import shutil
 import socket
+import re
 from glob import glob
 
 # ANSI color codes
@@ -184,6 +186,146 @@ def run_ping():
     return None, "no stats found"
 
 
+def get_active_interface():
+    """Return the default outbound network interface name, or None."""
+    try:
+        result = subprocess.run(
+            ["ip", "route", "get", "1.1.1.1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    fields = result.stdout.split()
+    if "dev" in fields:
+        dev_index = fields.index("dev") + 1
+        if dev_index < len(fields):
+            return fields[dev_index]
+    return None
+
+
+def is_wireless_interface(interface):
+    """Return True when the interface appears to be a wireless NIC."""
+    if not interface:
+        return False
+    return os.path.isdir(f"/sys/class/net/{interface}/wireless")
+
+
+def read_wireless_signal_dbm(interface):
+    """
+    Read signal level in dBm from /proc/net/wireless for an interface.
+
+    Returns None when unavailable.
+    """
+    if not interface:
+        return None
+
+    try:
+        with open("/proc/net/wireless", "r") as f:
+            for line in f.readlines()[2:]:
+                if ":" not in line:
+                    continue
+                iface, values = line.split(":", 1)
+                if iface.strip() != interface:
+                    continue
+                fields = values.split()
+                if len(fields) >= 4:
+                    # Level is typically reported as a negative dBm value.
+                    return int(float(fields[2]))
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+    return None
+
+
+def infer_wifi_standard_from_link(link_text):
+    """Infer Wi-Fi generation (b/g/n/ac/ax) from `iw ... link` output."""
+    if not link_text:
+        return None
+
+    text = link_text.upper()
+    if "EHT-" in text:
+        return "be"
+    if "HE-" in text:
+        return "ax"
+    if "VHT-" in text:
+        return "ac"
+    if "HT-" in text:
+        return "n"
+
+    # No MCS hints found, infer from frequency as a rough fallback.
+    freq_match = re.search(r"freq:\s*(\d+)", link_text, flags=re.IGNORECASE)
+    if not freq_match:
+        return None
+    freq_mhz = int(freq_match.group(1))
+    if freq_mhz < 2500:
+        return "b/g"
+    return "a"
+
+
+def get_wifi_details(interface):
+    """
+    Return Wi-Fi details for a wireless interface.
+
+    Dict keys: signal_dbm, signal_quality, channel, channel_width_mhz, wifi_standard.
+    """
+    details = {
+        "signal_dbm": None,
+        "signal_quality": None,
+        "channel": None,
+        "channel_width_mhz": None,
+        "wifi_standard": None,
+    }
+    if not interface:
+        return details
+
+    signal_dbm = read_wireless_signal_dbm(interface)
+    details["signal_dbm"] = signal_dbm
+    if signal_dbm is not None:
+        # Clamp into a friendly percentage-style quality range.
+        quality = int(max(0, min(100, 2 * (signal_dbm + 100))))
+        details["signal_quality"] = quality
+
+    try:
+        info_result = subprocess.run(
+            ["iw", "dev", interface, "info"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+        if info_result.returncode == 0:
+            channel_match = re.search(r"\bchannel\s+(\d+)", info_result.stdout, flags=re.IGNORECASE)
+            width_match = re.search(r"width:\s*(\d+)\s*MHz", info_result.stdout, flags=re.IGNORECASE)
+            if channel_match:
+                details["channel"] = channel_match.group(1)
+            if width_match:
+                details["channel_width_mhz"] = width_match.group(1)
+    except Exception:
+        pass
+
+    try:
+        link_result = subprocess.run(
+            ["iw", "dev", interface, "link"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+        if link_result.returncode == 0:
+            details["wifi_standard"] = infer_wifi_standard_from_link(link_result.stdout)
+    except Exception:
+        pass
+
+    return details
+
+
 def main():
     global _needs_full_refresh
 
@@ -199,6 +341,16 @@ def main():
     next_ping_time = prev_time + random.uniform(10, 40)
     last_ping_avg = None
     last_ping_error = None
+    next_network_details_time = prev_time
+    active_interface = None
+    connection_type = None
+    wifi_details = {
+        "signal_dbm": None,
+        "signal_quality": None,
+        "channel": None,
+        "channel_width_mhz": None,
+        "wifi_standard": None,
+    }
 
     try:
         while True:
@@ -233,6 +385,32 @@ def main():
                 last_ping_avg, last_ping_error = run_ping()
                 next_ping_time = now + random.uniform(10, 40)
 
+            if now >= next_network_details_time:
+                active_interface = get_active_interface()
+                if active_interface:
+                    if is_wireless_interface(active_interface):
+                        connection_type = "Wi-Fi"
+                        wifi_details = get_wifi_details(active_interface)
+                    else:
+                        connection_type = "Ethernet/Other"
+                        wifi_details = {
+                            "signal_dbm": None,
+                            "signal_quality": None,
+                            "channel": None,
+                            "channel_width_mhz": None,
+                            "wifi_standard": None,
+                        }
+                else:
+                    connection_type = "Disconnected"
+                    wifi_details = {
+                        "signal_dbm": None,
+                        "signal_quality": None,
+                        "channel": None,
+                        "channel_width_mhz": None,
+                        "wifi_standard": None,
+                    }
+                next_network_details_time = now + 5
+
             print(CURSOR_HOME, end="")
             print(f"Hostname: {hostname}{CLEAR_LINE}")
             print(f"CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
@@ -241,6 +419,26 @@ def main():
             print(f"Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
             print(f"Storage: {format_bytes(stor_used)} / {format_bytes(stor_total)} ({stor_pct:5.1f}%){CLEAR_LINE}")
             print(f"Network: ↑ {format_bytes_per_sec(tx_rate)}   ↓ {format_bytes_per_sec(rx_rate)}{CLEAR_LINE}")
+            print(
+                f"Connection: {connection_type or 'Unknown'}"
+                f"{f' ({active_interface})' if active_interface else ''}{CLEAR_LINE}"
+            )
+            if connection_type == "Wi-Fi":
+                signal_text = (
+                    f"{wifi_details['signal_dbm']} dBm ({wifi_details['signal_quality']}%)"
+                    if wifi_details["signal_dbm"] is not None and wifi_details["signal_quality"] is not None
+                    else "N/A"
+                )
+                print(f"Wi-Fi Signal: {signal_text}{CLEAR_LINE}")
+                print(f"Wi-Fi Channel: {wifi_details['channel'] or 'N/A'}{CLEAR_LINE}")
+                width = wifi_details["channel_width_mhz"]
+                print(f"Wi-Fi Width: {f'{width} MHz' if width else 'N/A'}{CLEAR_LINE}")
+                print(f"Wi-Fi Type: {wifi_details['wifi_standard'] or 'N/A'}{CLEAR_LINE}")
+            else:
+                print(f"Wi-Fi Signal: N/A{CLEAR_LINE}")
+                print(f"Wi-Fi Channel: N/A{CLEAR_LINE}")
+                print(f"Wi-Fi Width: N/A{CLEAR_LINE}")
+                print(f"Wi-Fi Type: N/A{CLEAR_LINE}")
             print(
                 f"Ping (avg of 3 to 1.1.1.1): "
                 f"{'ERROR - ' + last_ping_error if last_ping_error else f'{last_ping_avg:.2f} ms' if last_ping_avg else 'Pending...'}"
