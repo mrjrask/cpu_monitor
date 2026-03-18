@@ -43,6 +43,14 @@ def clear_terminal():
     print(CLEAR_SCREEN, end="", flush=True)
 
 
+def resize_terminal(cols=50, rows=14):
+    """Request terminal resize via ANSI escape sequence when stdout is a TTY."""
+    if not os.isatty(1):
+        return
+    # CSI 8 ; <rows> ; <cols> t  -> Resize terminal window in supporting emulators.
+    print(f"\033[8;{rows};{cols}t", end="", flush=True)
+
+
 def get_cpu_temp():
     """Read CPU temperature (°C) from system."""
     with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
@@ -78,6 +86,21 @@ def read_cpu_times():
     idle = times[3] + times[4]
     total = sum(times)
     return idle, total
+
+
+def read_gpu_usage_percent():
+    """Return GPU utilization percent when available, otherwise None."""
+    busy_path = "/sys/class/devfreq/fb000000.gpu/load"
+    if os.path.exists(busy_path):
+        try:
+            with open(busy_path, "r") as f:
+                # Typical value is tenths of a percent (e.g., 123 => 12.3%).
+                value = int(f.read().strip())
+            return max(0.0, min(100.0, value / 10.0))
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+
+    return None
 
 
 def read_network_bytes():
@@ -335,6 +358,7 @@ def main():
 
     hostname = socket.gethostname()
 
+    resize_terminal(cols=50, rows=14)
     clear_terminal()
     signal.signal(signal.SIGWINCH, _handle_resize)
 
@@ -369,6 +393,7 @@ def main():
             idle, total = read_cpu_times()
             cpu_usage = (1 - (idle - prev_idle) / (total - prev_total)) * 100 if total != prev_total else 0
             prev_idle, prev_total = idle, total
+            gpu_usage = read_gpu_usage_percent()
 
             temp_c = get_cpu_temp()
             temp_f = temp_c * 9 / 5 + 32
@@ -422,7 +447,10 @@ def main():
             print(f"Hostname: {hostname}{CLEAR_LINE}")
             print(f"CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
             print(f"Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
-            print(f"CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
+            gpu_text = f"{gpu_usage:5.1f}%" if gpu_usage is not None else "N/A"
+            print(
+                f"CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}  /   GPU: {gpu_text}{CLEAR_LINE}"
+            )
             print(f"Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
             print(f"Storage: {format_bytes(stor_used)} / {format_bytes(stor_total)} ({stor_pct:5.1f}%){CLEAR_LINE}")
             print(f"Network: ↑ {format_bytes_per_sec(tx_rate)}   ↓ {format_bytes_per_sec(rx_rate)}{CLEAR_LINE}")
@@ -440,15 +468,15 @@ def main():
                 width = wifi_details["channel_width_mhz"]
                 channel = wifi_details["channel"]
                 width_text = f" ({width} MHz)" if width else ""
-                print(f"Wi-Fi Channel: {f'{channel}{width_text}' if channel else 'N/A'}{CLEAR_LINE}")
+                channel_text = f"{channel}{width_text}" if channel else "N/A"
                 frequency = wifi_details["frequency_mhz"]
                 wifi_type = wifi_details["wifi_standard"]
                 freq_text = f" ({frequency} MHz)" if frequency else ""
-                print(f"Wi-Fi Type: {f'{wifi_type}{freq_text}' if wifi_type else 'N/A'}{CLEAR_LINE}")
+                wifi_type_text = f"802.11{wifi_type}{freq_text}" if wifi_type else "N/A"
+                print(f"Wi-Fi Channel/Type: {channel_text}  /   {wifi_type_text}{CLEAR_LINE}")
             else:
                 print(f"Wi-Fi Signal: N/A{CLEAR_LINE}")
-                print(f"Wi-Fi Channel: N/A{CLEAR_LINE}")
-                print(f"Wi-Fi Type: N/A{CLEAR_LINE}")
+                print(f"Wi-Fi Channel/Type: N/A  /   N/A{CLEAR_LINE}")
             print(
                 f"Ping (avg of 3 to 1.1.1.1): "
                 f"{'ERROR - ' + last_ping_error if last_ping_error else f'{last_ping_avg:.2f} ms' if last_ping_avg else 'Pending...'}"
