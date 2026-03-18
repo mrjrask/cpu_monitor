@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import os
+import platform
 import random
 import signal
 import subprocess
@@ -30,6 +31,7 @@ CURSOR_HOME = "\033[H"
 CLEAR_LINE = "\033[K"
 
 _needs_full_refresh = False
+IS_MACOS = platform.system() == "Darwin"
 
 
 def _handle_resize(signum, frame):
@@ -53,6 +55,8 @@ def resize_terminal(cols=60, rows=13):
 
 def get_cpu_temp():
     """Read CPU temperature (°C) from system."""
+    if IS_MACOS:
+        return None
     with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
         millideg = int(f.read().strip())
     return millideg / 1000.0
@@ -80,6 +84,23 @@ def read_fan_speed_rpm():
 
 def read_cpu_times():
     """Read aggregate CPU idle and total times."""
+    if IS_MACOS:
+        try:
+            result = subprocess.run(
+                ["top", "-l", "1", "-n", "0"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                match = re.search(r"CPU usage:\s*.*?(\d+(?:\.\d+)?)%\s*idle", result.stdout, flags=re.IGNORECASE)
+                if match:
+                    idle_pct = float(match.group(1))
+                    return idle_pct, 100.0
+        except Exception:
+            pass
+        return 0.0, 100.0
     with open("/proc/stat", "r") as f:
         parts = f.readline().split()[1:]
     times = list(map(int, parts))
@@ -151,6 +172,45 @@ def read_gpu_usage_percent():
 
 def read_network_bytes():
     """Return total received and transmitted bytes for non-loopback interfaces."""
+    if IS_MACOS:
+        total_rx = 0
+        total_tx = 0
+        try:
+            result = subprocess.run(
+                ["netstat", "-ib"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode != 0:
+                return 0, 0
+            lines = result.stdout.splitlines()
+            if not lines:
+                return 0, 0
+            header = lines[0].split()
+            ibytes_idx = header.index("Ibytes") if "Ibytes" in header else None
+            obytes_idx = header.index("Obytes") if "Obytes" in header else None
+            if ibytes_idx is None or obytes_idx is None:
+                return 0, 0
+            seen_ifaces = set()
+            for line in lines[1:]:
+                fields = line.split()
+                if len(fields) <= max(ibytes_idx, obytes_idx):
+                    continue
+                iface = fields[0]
+                if iface == "lo0" or iface in seen_ifaces:
+                    continue
+                try:
+                    total_rx += int(fields[ibytes_idx])
+                    total_tx += int(fields[obytes_idx])
+                    seen_ifaces.add(iface)
+                except ValueError:
+                    continue
+            return total_rx, total_tx
+        except Exception:
+            return 0, 0
+
     total_rx = 0
     total_tx = 0
     with open("/proc/net/dev", "r") as f:
@@ -167,6 +227,48 @@ def read_network_bytes():
 
 def read_memory_usage():
     """Return total and used memory in bytes."""
+    if IS_MACOS:
+        try:
+            memsize_result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            vm_result = subprocess.run(
+                ["vm_stat"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if memsize_result.returncode != 0 or vm_result.returncode != 0:
+                return None, None
+            mem_total = int(memsize_result.stdout.strip())
+            page_size_match = re.search(r"page size of (\d+) bytes", vm_result.stdout, flags=re.IGNORECASE)
+            page_size = int(page_size_match.group(1)) if page_size_match else 4096
+
+            page_counts = {}
+            for line in vm_result.stdout.splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                digits = re.sub(r"[^\d]", "", value)
+                if digits:
+                    page_counts[key.strip().lower()] = int(digits)
+
+            available_pages = (
+                page_counts.get("pages free", 0)
+                + page_counts.get("pages inactive", 0)
+                + page_counts.get("pages speculative", 0)
+            )
+            mem_available = available_pages * page_size
+            mem_used = max(mem_total - mem_available, 0)
+            return mem_total, mem_used
+        except Exception:
+            return None, None
+
     mem_total = None
     mem_available = None
 
@@ -257,6 +359,24 @@ def run_ping():
 
 def get_active_interface():
     """Return the default outbound network interface name, or None."""
+    if IS_MACOS:
+        try:
+            result = subprocess.run(
+                ["route", "-n", "get", "1.1.1.1"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            return None
+
+        if result.returncode != 0:
+            return None
+
+        match = re.search(r"\binterface:\s*(\S+)", result.stdout)
+        return match.group(1) if match else None
+
     try:
         result = subprocess.run(
             ["ip", "route", "get", "1.1.1.1"],
@@ -283,6 +403,24 @@ def is_wireless_interface(interface):
     """Return True when the interface appears to be a wireless NIC."""
     if not interface:
         return False
+    if IS_MACOS:
+        try:
+            result = subprocess.run(
+                ["networksetup", "-listallhardwareports"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode != 0:
+                return False
+            blocks = result.stdout.split("\n\n")
+            for block in blocks:
+                if f"Device: {interface}" in block and "Hardware Port: Wi-Fi" in block:
+                    return True
+        except Exception:
+            return False
+        return False
     return os.path.isdir(f"/sys/class/net/{interface}/wireless")
 
 
@@ -293,6 +431,24 @@ def read_wireless_signal_dbm(interface):
     Returns None when unavailable.
     """
     if not interface:
+        return None
+    if IS_MACOS:
+        airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        try:
+            result = subprocess.run(
+                [airport, "-I"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode != 0:
+                return None
+            match = re.search(r"\bagrCtlRSSI:\s*(-?\d+)", result.stdout)
+            if match:
+                return int(match.group(1))
+        except Exception:
+            return None
         return None
 
     try:
@@ -362,6 +518,36 @@ def get_wifi_details(interface):
         quality = int(max(0, min(100, 2 * (signal_dbm + 100))))
         details["signal_quality"] = quality
 
+    if IS_MACOS:
+        airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        try:
+            result = subprocess.run(
+                [airport, "-I"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                channel_match = re.search(r"\bchannel:\s*([0-9,]+)", result.stdout, flags=re.IGNORECASE)
+                if channel_match:
+                    channel_parts = channel_match.group(1).split(",")
+                    details["channel"] = channel_parts[0]
+                    if len(channel_parts) > 1 and channel_parts[1].isdigit():
+                        details["channel_width_mhz"] = channel_parts[1]
+                freq_match = re.search(r"\bagrCtlFreq:\s*(\d+)", result.stdout, flags=re.IGNORECASE)
+                if freq_match:
+                    details["frequency_mhz"] = freq_match.group(1)
+
+                # macOS airport output doesn't directly expose PHY generation.
+                # Infer a best-effort standard from channel/frequency.
+                if details["frequency_mhz"]:
+                    freq_mhz = int(details["frequency_mhz"])
+                    details["wifi_standard"] = "a/n/ac/ax" if freq_mhz >= 5000 else "b/g/n"
+        except Exception:
+            pass
+        return details
+
     try:
         info_result = subprocess.run(
             ["iw", "dev", interface, "info"],
@@ -406,7 +592,8 @@ def main():
 
     resize_terminal(cols=60, rows=13)
     clear_terminal()
-    signal.signal(signal.SIGWINCH, _handle_resize)
+    if hasattr(signal, "SIGWINCH"):
+        signal.signal(signal.SIGWINCH, _handle_resize)
 
     prev_idle, prev_total = read_cpu_times()
     prev_rx, prev_tx = read_network_bytes()
@@ -442,11 +629,11 @@ def main():
             gpu_usage = read_gpu_usage_percent()
 
             temp_c = get_cpu_temp()
-            temp_f = temp_c * 9 / 5 + 32
+            temp_f = temp_c * 9 / 5 + 32 if temp_c is not None else None
             fan_rpm = read_fan_speed_rpm()
 
             mem_total, mem_used = read_memory_usage()
-            mem_pct = mem_used / mem_total * 100
+            mem_pct = (mem_used / mem_total * 100) if mem_total else None
 
             stor_total, stor_used = read_storage_usage("/")
             stor_pct = stor_used / stor_total * 100
@@ -491,13 +678,22 @@ def main():
 
             print(CURSOR_HOME, end="")
             print(f"🖥️  Hostname: {hostname}{CLEAR_LINE}")
-            print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
+            temp_text = (
+                f"{color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}"
+                if temp_c is not None and temp_f is not None
+                else "N/A"
+            )
+            print(f"🌡️  CPU Temp: {temp_text}{CLEAR_LINE}")
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
             gpu_text = f"{gpu_usage:5.1f}%" if gpu_usage is not None else "N/A"
             print(
                 f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}  / 🎮  GPU: {gpu_text}{CLEAR_LINE}"
             )
-            print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
+            if mem_total is not None and mem_used is not None and mem_pct is not None:
+                mem_text = f"{format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%)"
+            else:
+                mem_text = "N/A"
+            print(f"🧠  Memory: {mem_text}{CLEAR_LINE}")
             print(f"💾  Storage: {format_bytes(stor_used)} / {format_bytes(stor_total)} ({stor_pct:5.1f}%){CLEAR_LINE}")
             print(f"🌐  Network: ↑ {format_bytes_per_sec(tx_rate)}   ↓ {format_bytes_per_sec(rx_rate)}{CLEAR_LINE}")
             print(
