@@ -90,15 +90,30 @@ def read_cpu_times():
 
 def read_gpu_usage_percent():
     """Return GPU utilization percent when available, otherwise None."""
-    busy_path = "/sys/class/devfreq/fb000000.gpu/load"
-    if os.path.exists(busy_path):
-        try:
-            with open(busy_path, "r") as f:
-                # Typical value is tenths of a percent (e.g., 123 => 12.3%).
-                value = int(f.read().strip())
-            return max(0.0, min(100.0, value / 10.0))
-        except (FileNotFoundError, OSError, ValueError):
-            pass
+    # Common Linux GPU utilization paths:
+    # - devfreq load files (often tenths of a percent on Raspberry Pi kernels)
+    # - DRM gpu_busy_percent (already in whole percent on some drivers)
+    candidate_patterns = [
+        "/sys/class/devfreq/*gpu*/load",
+        "/sys/class/devfreq/*v3d*/load",
+        "/sys/class/drm/card*/device/gpu_busy_percent",
+    ]
+
+    for pattern in candidate_patterns:
+        for busy_path in glob(pattern):
+            try:
+                with open(busy_path, "r") as f:
+                    raw_value = f.read().strip()
+                value = float(raw_value)
+
+                # Heuristic:
+                # - values in [0, 100] are usually already percentages
+                # - larger values are often tenths of a percent
+                if value > 100.0:
+                    value /= 10.0
+                return max(0.0, min(100.0, value))
+            except (FileNotFoundError, OSError, ValueError):
+                continue
 
     return None
 
