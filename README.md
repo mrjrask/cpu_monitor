@@ -2,7 +2,7 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU/GPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
@@ -11,15 +11,13 @@ This script shows real-time CPU temperature, CPU/GPU utilization, fan speed, mem
 - **Live terminal dashboard** with 1-second refresh intervals.
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **CPU usage** with colorized load thresholds.
-- **GPU usage** (best-effort autodetection across common Linux sysfs locations).
 - **Fan RPM** detection from common hwmon paths.
 - **Memory and storage** usage with human-readable units.
-- **Network throughput** (TX/RX bytes per second).
+- **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
 - **Wi-Fi details** when connected wirelessly:
   - signal level (dBm + derived quality %)
   - channel + channel width
-  - frequency
   - inferred Wi-Fi standard (rough heuristic)
 - **Periodic latency checks** by running ping to `1.1.1.1` (average of 3 pings).
 - **Hostname display** and terminal-resize handling for cleaner redraws.
@@ -91,13 +89,12 @@ Stop with `Ctrl+C`.
 - `CPU Temp`: CPU die temperature in °C / °F.
 - `Fan Speed`: first detected fan RPM, or `N/A`.
 - `CPU Usage`: aggregate CPU utilization percentage.
-- `GPU`: utilization percentage if detected, otherwise `N/A`.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: used / total storage for `/` and percentage.
-- `Network`: transmit (`↑`) and receive (`↓`) rates.
+- `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, and `Mb/s`.
 - `Connection`: active outbound interface and type.
 - `Wi-Fi Signal`: dBm and derived quality % (Wi-Fi only).
-- `Wi-Fi Channel/Freq`: channel width and frequency (Wi-Fi only).
+- `Wi-Fi Channel`: channel with optional channel width (Wi-Fi only).
 - `Ping`: average round-trip time from 3 pings to `1.1.1.1`, refreshed at random intervals.
 
 ---
@@ -125,7 +122,6 @@ Stop with `Ctrl+C`.
 
 Because Linux hardware interfaces vary by board, kernel, and distro, some metrics are best-effort:
 
-- **GPU usage**: tries multiple sysfs/debugfs paths and parses values heuristically.
 - **Fan speed**: checks common `fan1_input` paths under hwmon.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`.
@@ -189,35 +185,21 @@ You can easily adapt the script for your setup:
 
 ---
 
-## Running at Boot (systemd example)
+## Running at Boot (systemd installer)
 
-Create `/etc/systemd/system/cpu-monitor.service`:
-
-```ini
-[Unit]
-Description=Raspberry Pi CPU Monitor
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/path/to/Rpi_cpu_monitor
-ExecStart=/usr/bin/python3 /path/to/Rpi_cpu_monitor/cpu_monitor.py
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
+Use the included installer script to create and start a systemd service automatically:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable cpu-monitor.service
-sudo systemctl start cpu-monitor.service
+sudo ./install_service.sh
 ```
+
+Optional environment variables:
+
+```bash
+sudo SERVICE_NAME=cpu-monitor SERVICE_USER=pi PYTHON_BIN=/usr/bin/python3 ./install_service.sh
+```
+
+This writes `/etc/systemd/system/<service-name>.service`, reloads systemd, enables the service, and starts it.
 
 Check logs:
 

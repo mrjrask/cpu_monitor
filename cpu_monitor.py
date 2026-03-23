@@ -88,67 +88,6 @@ def read_cpu_times():
     return idle, total
 
 
-def read_gpu_usage_percent():
-    """Return GPU utilization percent when available, otherwise None."""
-    def parse_gpu_busy_value(raw_value):
-        """Parse a raw GPU busy string (e.g. '321', '32.1', '32%')."""
-        match = re.search(r"[-+]?\d*\.?\d+", raw_value)
-        if not match:
-            return None
-
-        value = float(match.group(0))
-
-        # Heuristic:
-        # - values in [0, 100] are usually already percentages
-        # - larger values are often tenths of a percent
-        if value > 100.0:
-            value /= 10.0
-
-        return max(0.0, min(100.0, value))
-
-    # Common Linux GPU utilization paths:
-    # - devfreq load files (often tenths of a percent on Raspberry Pi kernels)
-    # - DRM gpu_busy_percent (already in whole percent on some drivers)
-    candidate_paths = [
-        *glob("/sys/class/devfreq/*gpu*/load"),
-        *glob("/sys/class/devfreq/*v3d*/load"),
-        *glob("/sys/class/drm/card*/device/gpu_busy_percent"),
-        *glob("/sys/kernel/debug/dri/*/gpu_busy_percent"),
-    ]
-
-    # Add generic devfreq load paths when the device name/path suggests a GPU.
-    gpu_keywords = ("gpu", "v3d", "mali", "panfrost", "adreno", "radeon", "nouveau")
-    for devfreq_dir in glob("/sys/class/devfreq/*"):
-        load_path = os.path.join(devfreq_dir, "load")
-        if not os.path.exists(load_path):
-            continue
-        devfreq_name = os.path.basename(devfreq_dir).lower()
-        real_path = os.path.realpath(devfreq_dir).lower()
-        if any(keyword in devfreq_name or keyword in real_path for keyword in gpu_keywords):
-            candidate_paths.append(load_path)
-
-    # Keep order while removing duplicates.
-    seen = set()
-    deduped_candidate_paths = []
-    for path in candidate_paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        deduped_candidate_paths.append(path)
-
-    for busy_path in deduped_candidate_paths:
-        try:
-            with open(busy_path, "r") as f:
-                raw_value = f.read().strip()
-            value = parse_gpu_busy_value(raw_value)
-            if value is not None:
-                return value
-        except (FileNotFoundError, OSError, ValueError):
-            continue
-
-    return None
-
-
 def read_network_bytes():
     """Return total received and transmitted bytes for non-loopback interfaces."""
     total_rx = 0
@@ -211,13 +150,16 @@ def color_for_temp(temp_c):
     return RESET
 
 
-def format_bytes_per_sec(num_bytes_per_sec):
-    units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
-    value = float(max(num_bytes_per_sec, 0.0))
-    for unit in units:
-        if value < 1024.0 or unit == units[-1]:
-            return f"{value:7.2f} {unit}"
-        value /= 1024.0
+def format_network_bits(num_bytes_per_sec):
+    """Format throughput as bits, kilobits, and megabits per second."""
+    bits_per_sec = max(num_bytes_per_sec, 0.0) * 8.0
+    kilobits_per_sec = bits_per_sec / 1000.0
+    megabits_per_sec = bits_per_sec / 1_000_000.0
+    return (
+        f"{bits_per_sec:8.2f} b/s  | "
+        f"{kilobits_per_sec:8.2f} Kb/s  | "
+        f"{megabits_per_sec:8.4f} Mb/s"
+    )
 
 
 def format_bytes(num_bytes):
@@ -342,14 +284,13 @@ def get_wifi_details(interface):
     """
     Return Wi-Fi details for a wireless interface.
 
-    Dict keys: signal_dbm, signal_quality, channel, channel_width_mhz, frequency_mhz, wifi_standard.
+    Dict keys: signal_dbm, signal_quality, channel, channel_width_mhz, wifi_standard.
     """
     details = {
         "signal_dbm": None,
         "signal_quality": None,
         "channel": None,
         "channel_width_mhz": None,
-        "frequency_mhz": None,
         "wifi_standard": None,
     }
     if not interface:
@@ -390,9 +331,6 @@ def get_wifi_details(interface):
         )
         if link_result.returncode == 0:
             details["wifi_standard"] = infer_wifi_standard_from_link(link_result.stdout)
-            freq_match = re.search(r"freq:\s*(\d+)", link_result.stdout, flags=re.IGNORECASE)
-            if freq_match:
-                details["frequency_mhz"] = freq_match.group(1)
     except Exception:
         pass
 
@@ -404,7 +342,7 @@ def main():
 
     hostname = socket.gethostname()
 
-    resize_terminal(cols=60, rows=13)
+    resize_terminal(cols=60, rows=14)
     clear_terminal()
     signal.signal(signal.SIGWINCH, _handle_resize)
 
@@ -423,7 +361,6 @@ def main():
         "signal_quality": None,
         "channel": None,
         "channel_width_mhz": None,
-        "frequency_mhz": None,
         "wifi_standard": None,
     }
 
@@ -439,8 +376,6 @@ def main():
             idle, total = read_cpu_times()
             cpu_usage = (1 - (idle - prev_idle) / (total - prev_total)) * 100 if total != prev_total else 0
             prev_idle, prev_total = idle, total
-            gpu_usage = read_gpu_usage_percent()
-
             temp_c = get_cpu_temp()
             temp_f = temp_c * 9 / 5 + 32
             fan_rpm = read_fan_speed_rpm()
@@ -474,7 +409,6 @@ def main():
                             "signal_quality": None,
                             "channel": None,
                             "channel_width_mhz": None,
-                            "frequency_mhz": None,
                             "wifi_standard": None,
                         }
                 else:
@@ -484,7 +418,6 @@ def main():
                         "signal_quality": None,
                         "channel": None,
                         "channel_width_mhz": None,
-                        "frequency_mhz": None,
                         "wifi_standard": None,
                     }
                 next_network_details_time = now + 5
@@ -493,13 +426,11 @@ def main():
             print(f"🖥️  Hostname: {hostname}{CLEAR_LINE}")
             print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
-            gpu_text = f"{gpu_usage:5.1f}%" if gpu_usage is not None else "N/A"
-            print(
-                f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}  / 🎮  GPU: {gpu_text}{CLEAR_LINE}"
-            )
+            print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
             print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
             print(f"💾  Storage: {format_bytes(stor_used)} / {format_bytes(stor_total)} ({stor_pct:5.1f}%){CLEAR_LINE}")
-            print(f"🌐  Network: ↑ {format_bytes_per_sec(tx_rate)}   ↓ {format_bytes_per_sec(rx_rate)}{CLEAR_LINE}")
+            print(f"🌐  Network: ↑ {format_network_bits(tx_rate)}{CLEAR_LINE}")
+            print(f"             ↓ {format_network_bits(rx_rate)}{CLEAR_LINE}")
             print(
                 f"🔌  Connection: {connection_type or 'Unknown'}"
                 f"{f' ({active_interface})' if active_interface else ''}{CLEAR_LINE}"
@@ -515,12 +446,10 @@ def main():
                 channel = wifi_details["channel"]
                 width_text = f" ({width} MHz)" if width else ""
                 channel_text = f"{channel}{width_text}" if channel else "N/A"
-                frequency = wifi_details["frequency_mhz"]
-                frequency_text = f"{frequency} MHz" if frequency else "N/A"
-                print(f"📡  Wi-Fi Channel/Freq: {channel_text}  / {frequency_text}{CLEAR_LINE}")
+                print(f"📡  Wi-Fi Channel: {channel_text}{CLEAR_LINE}")
             else:
                 print(f"📶  Wi-Fi Signal: N/A{CLEAR_LINE}")
-                print(f"📡  Wi-Fi Channel/Freq: N/A  / N/A{CLEAR_LINE}")
+                print(f"📡  Wi-Fi Channel: N/A{CLEAR_LINE}")
             print(
                 f"🏓  Ping (avg of 3 to 1.1.1.1): "
                 f"{'ERROR - ' + last_ping_error if last_ping_error else f'{last_ping_avg:.2f} ms' if last_ping_avg else 'Pending...'}"
