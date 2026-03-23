@@ -151,15 +151,13 @@ def color_for_temp(temp_c):
 
 
 def format_network_bits(num_bytes_per_sec):
-    """Format throughput as bits, kilobits, and megabits per second."""
+    """Format throughput as a single human-readable bits/sec unit."""
     bits_per_sec = max(num_bytes_per_sec, 0.0) * 8.0
-    kilobits_per_sec = bits_per_sec / 1000.0
-    megabits_per_sec = bits_per_sec / 1_000_000.0
-    return (
-        f"{bits_per_sec:8.2f} b/s  | "
-        f"{kilobits_per_sec:8.2f} Kb/s  | "
-        f"{megabits_per_sec:8.4f} Mb/s"
-    )
+    if bits_per_sec >= 1_000_000.0:
+        return f"{bits_per_sec / 1_000_000.0:8.2f} Mb/s"
+    if bits_per_sec >= 1_000.0:
+        return f"{bits_per_sec / 1_000.0:8.2f} Kb/s"
+    return f"{bits_per_sec:8.2f} b/s"
 
 
 def format_bytes(num_bytes):
