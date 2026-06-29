@@ -185,31 +185,6 @@ You can easily adapt the script for your setup:
 
 ---
 
-## Running at Boot (systemd installer)
-
-Use the included installer script to create and start a systemd service automatically:
-
-```bash
-sudo ./install_service.sh
-```
-
-Optional environment variables:
-
-```bash
-sudo SERVICE_NAME=cpu-monitor SERVICE_USER=pi PYTHON_BIN=/usr/bin/python3 ./install_service.sh
-```
-
-This writes `/etc/systemd/system/<service-name>.service`, reloads systemd, enables the service, and starts it.
-
-Check logs:
-
-```bash
-sudo systemctl status cpu-monitor.service
-journalctl -u cpu-monitor.service -f
-```
-
----
-
 ## License
 
 Add your preferred license file (for example, MIT) if this project is intended for distribution.
