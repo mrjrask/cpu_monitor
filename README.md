@@ -2,7 +2,7 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
@@ -16,6 +16,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
 - **Wi-Fi details** when connected wirelessly:
+  - connected network name (SSID)
   - signal level (dBm + derived quality %)
   - channel + channel width
   - inferred Wi-Fi standard (rough heuristic)
@@ -93,6 +94,7 @@ Stop with `Ctrl+C`.
 - `Storage`: used / total storage for `/` and percentage.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, and `Mb/s`.
 - `Connection`: active outbound interface and type.
+- `Wi-Fi Network`: connected wireless network name / SSID (Wi-Fi only).
 - `Wi-Fi Signal`: dBm and derived quality % (Wi-Fi only).
 - `Wi-Fi Channel`: channel with optional channel width (Wi-Fi only).
 - `Ping`: average round-trip time from 3 pings to `1.1.1.1`, refreshed at random intervals.
