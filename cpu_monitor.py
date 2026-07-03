@@ -47,7 +47,7 @@ def clear_terminal():
     print(CLEAR_SCREEN, end="", flush=True)
 
 
-def resize_terminal(cols=TERMINAL_COLS, rows=13):
+def resize_terminal(cols=TERMINAL_COLS, rows=14):
     """Request terminal resize via ANSI escape sequence when stdout is a TTY."""
     if not os.isatty(1):
         return
@@ -57,7 +57,7 @@ def resize_terminal(cols=TERMINAL_COLS, rows=13):
 
 def calculate_required_rows(storage_line_count):
     """Calculate terminal rows required for the current rendered output."""
-    base_rows = 13
+    base_rows = 14
     extra_storage_rows = max(storage_line_count - 1, 0)
     return base_rows + extra_storage_rows
 
@@ -397,9 +397,10 @@ def get_wifi_details(interface):
     """
     Return Wi-Fi details for a wireless interface.
 
-    Dict keys: signal_dbm, signal_quality, channel, channel_width_mhz, wifi_standard.
+    Dict keys: ssid, signal_dbm, signal_quality, channel, channel_width_mhz, wifi_standard.
     """
     details = {
+        "ssid": None,
         "signal_dbm": None,
         "signal_quality": None,
         "channel": None,
@@ -443,6 +444,9 @@ def get_wifi_details(interface):
             timeout=3,
         )
         if link_result.returncode == 0:
+            ssid_match = re.search(r"^\s*SSID:\s*(.+)$", link_result.stdout, flags=re.MULTILINE)
+            if ssid_match:
+                details["ssid"] = ssid_match.group(1).strip()
             details["wifi_standard"] = infer_wifi_standard_from_link(link_result.stdout)
     except Exception:
         pass
@@ -470,6 +474,7 @@ def main():
     active_interface = None
     connection_type = None
     wifi_details = {
+        "ssid": None,
         "signal_dbm": None,
         "signal_quality": None,
         "channel": None,
@@ -539,6 +544,7 @@ def main():
                     else:
                         connection_type = "Ethernet/Other"
                         wifi_details = {
+                            "ssid": None,
                             "signal_dbm": None,
                             "signal_quality": None,
                             "channel": None,
@@ -548,6 +554,7 @@ def main():
                 else:
                     connection_type = "Disconnected"
                     wifi_details = {
+                        "ssid": None,
                         "signal_dbm": None,
                         "signal_quality": None,
                         "channel": None,
@@ -581,6 +588,7 @@ def main():
                     if wifi_details["signal_dbm"] is not None and wifi_details["signal_quality"] is not None
                     else "N/A"
                 )
+                print(f"📶  Wi-Fi Network: {wifi_details['ssid'] or 'N/A'}{CLEAR_LINE}")
                 print(f"📶  Wi-Fi Signal: {signal_text}{CLEAR_LINE}")
                 width = wifi_details["channel_width_mhz"]
                 channel = wifi_details["channel"]
@@ -588,6 +596,7 @@ def main():
                 channel_text = f"{channel}{width_text}" if channel else "N/A"
                 print(f"📡  Wi-Fi Channel: {channel_text}{CLEAR_LINE}")
             else:
+                print(f"📶  Wi-Fi Network: N/A{CLEAR_LINE}")
                 print(f"📶  Wi-Fi Signal: N/A{CLEAR_LINE}")
                 print(f"📡  Wi-Fi Channel: N/A{CLEAR_LINE}")
             print(
