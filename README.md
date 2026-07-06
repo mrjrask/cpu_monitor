@@ -2,7 +2,7 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time board identification, CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time board identification, CPU temperature, Raspberry Pi SoC temperature, CPU utilization/frequency, Pi throttling or undervoltage health, fan speed/state, memory/storage usage, network throughput, connection details, Wi-Fi network metrics, and optional ping latency in a compact dashboard.
 
 ---
 
@@ -10,9 +10,11 @@ This script shows real-time board identification, CPU temperature, CPU utilizati
 
 - **Live terminal dashboard** with 1-second refresh intervals.
 - **Board identification** from Raspberry Pi / Linux device tree metadata.
-- **CPU temperature** in °C and °F with colorized thermal thresholds.
-- **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available, shown separately when sysfs CPU temperature is also available or used as a fallback when sysfs is missing.
+- **CPU temperature auto-detection** from CPU-like Linux thermal zones, with `N/A` fallback instead of startup failure.
+- **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available.
 - **CPU usage** with colorized load thresholds.
+- **CPU frequency** from sysfs or `vcgencmd measure_clock arm`.
+- **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, throttling, frequency capping, and soft temperature-limit flags.
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
 - **Memory and storage** usage with human-readable units.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
@@ -22,7 +24,9 @@ This script shows real-time board identification, CPU temperature, CPU utilizati
   - signal level (dBm + derived quality %)
   - channel + channel width
   - inferred Wi-Fi standard (rough heuristic)
-- **Periodic latency checks** by running ping to `1.1.1.1` (average of 3 pings).
+- **Configurable periodic latency checks** with selectable ping target/count or disabled ping.
+- **Compact display mode** for small terminals, OLED/LCD projects, and emoji-free output.
+- **Optional alert hook** for high temperature or Raspberry Pi health warnings.
 - **Hostname display** and terminal-resize handling for cleaner redraws.
 - **Logging support** via `cpu_monitor.log` (timestamped log format configured).
 
@@ -37,19 +41,20 @@ This script shows real-time board identification, CPU temperature, CPU utilizati
   - `/proc/stat`
   - `/proc/meminfo`
   - `/proc/net/dev`
-  - `/sys/class/thermal/thermal_zone0/temp`
+  - `/sys/class/thermal/thermal_zone*/type` and sibling `temp` files
   - `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` (optional CPU frequency source)
 
 ### Software
 
 - **Python 3** (no third-party Python packages required).
 - System commands used by the script:
-  - `ping`
+  - `ping` (optional; disabled with `--no-ping`)
   - `ip` (from `iproute2`)
   - `iw` (for Wi-Fi details)
-  - `vcgencmd` (optional, Raspberry Pi firmware command used for SoC/GPU temperature)
+  - `lsblk` (for per-mount storage details)
+  - `vcgencmd` (optional Raspberry Pi firmware command used for SoC temperature, CPU clock fallback, and throttling/undervoltage health)
 
-> If `ip` or `iw` are missing, the script still runs, but some network/Wi-Fi details may show as unavailable. If `vcgencmd` is missing, the script skips the Raspberry Pi SoC/GPU temperature reading and continues using sysfs CPU temperature when available.
+> If optional commands are missing, the script still runs and affected metrics display as `N/A`, `Disabled`, or best-effort fallbacks.
 
 ---
 
@@ -86,25 +91,53 @@ Or run as an executable:
 
 Stop with `Ctrl+C`.
 
+### Command-line options
+
+```bash
+python3 cpu_monitor.py --help
+```
+
+Useful Raspberry Pi examples:
+
+```bash
+# Ping a local gateway instead of the default public resolver.
+python3 cpu_monitor.py --ping-target 192.168.1.1
+
+# Use five pings for each latency sample.
+python3 cpu_monitor.py --ping-count 5
+
+# Disable ICMP checks on isolated networks or locked-down environments.
+python3 cpu_monitor.py --no-ping
+
+# Use shorter, emoji-free output for a small display or narrow SSH session.
+python3 cpu_monitor.py --compact
+
+# Run a hook once when temperature or Pi health enters an alert state.
+python3 cpu_monitor.py --temp-alert-c 70 --alert-command /home/pi/bin/cpu-alert.sh
+```
+
+When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` in its environment. The hook runs once when entering alert state and can run again only after the alert clears and reappears.
+
 ---
 
 ## Dashboard Fields
 
 - `Hostname`: system hostname.
 - `Board`: board model reported by device tree metadata, or `N/A`.
-- `CPU Temp`: CPU die temperature in °C / °F.
-- `Fan Speed`: first detected fan RPM, or `N/A`.
+- `CPU Temp`: CPU die temperature in °C / °F. If sysfs CPU temperature is unavailable, the script falls back to Raspberry Pi `vcgencmd measure_temp` when available.
+- `SoC Temp`: Raspberry Pi SoC/GPU temperature from `vcgencmd measure_temp`, shown separately when both CPU and SoC temperatures are available.
+- `Fan Speed`: first detected fan RPM, fan cooling state, or `N/A`.
 - `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `CPU Freq`: current CPU frequency in MHz, read from sysfs or `vcgencmd`; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
-- `Storage`: used / total storage for `/` and percentage.
-- `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, and `Mb/s`.
+- `Storage`: mounted storage details and usage percentage.
+- `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, or `Mb/s`.
 - `Connection`: active outbound interface and type.
 - `Wi-Fi Network`: connected wireless network name / SSID (Wi-Fi only).
 - `Wi-Fi Signal`: dBm and derived quality % (Wi-Fi only).
 - `Wi-Fi Channel`: channel with optional channel width (Wi-Fi only).
-- `Ping`: average round-trip time from 3 pings to `1.1.1.1`, refreshed at random intervals.
+- `Ping`: average round-trip time to the configured target, refreshed at random intervals, or `Disabled`.
 
 ---
 
@@ -131,14 +164,51 @@ Stop with `Ctrl+C`.
 
 Because Linux hardware interfaces vary by board, kernel, and distro, some metrics are best-effort:
 
+- **CPU temperature**: scans `/sys/class/thermal/thermal_zone*/type` for CPU-like thermal zones and falls back to the first thermal zone if no CPU-like label is found.
 - **CPU frequency**: prefers `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` in kHz, then falls back to `vcgencmd measure_clock arm` in Hz.
-- **Fan speed**: checks common `fan1_input` paths under hwmon.
+- **Fan speed**: checks common `fan1_input` paths under hwmon, then fan-like `/sys/class/thermal/cooling_device*` state files.
 - **Raspberry Pi SoC/GPU temperature**: optionally runs `vcgencmd measure_temp` and parses output like `temp=52.1'C`.
-- **Wi-Fi details**: depends on interface support and `iw` output format.
-- **Ping**: requires network reachability and permission to run `ping`.
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
+- **Wi-Fi details**: depends on interface support and `iw` output format.
+- **Ping**: requires network reachability and permission to run `ping`; use `--no-ping` to disable.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
+
+---
+
+## Run at Boot on Raspberry Pi
+
+The live dashboard is most useful in an SSH session, but you can run it under systemd for persistent logs or when paired with a terminal/display service.
+
+Create `/etc/systemd/system/cpu-monitor.service`:
+
+```ini
+[Unit]
+Description=Raspberry Pi CPU Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/Rpi_cpu_monitor
+ExecStart=/usr/bin/python3 /home/pi/Rpi_cpu_monitor/cpu_monitor.py --no-ping --compact
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable cpu-monitor.service
+sudo systemctl start cpu-monitor.service
+journalctl -u cpu-monitor.service -f
+```
+
+For a terminal dashboard on a directly attached display, run the script from a user session, kiosk terminal, tmux session, or display-specific service instead of a plain background service.
 
 ---
 
@@ -148,23 +218,25 @@ If a metric cannot be collected, the dashboard displays `N/A` rather than failin
 
 The monitor auto-detects CPU-related thermal zones by checking `/sys/class/thermal/thermal_zone*/type` for names such as `cpu-thermal`, `soc-thermal`, and `x86_pkg_temp`, then reading the sibling `temp` file.
 
-- Confirm thermal zones exist and inspect their labels:
+Inspect thermal zones:
 
 ```bash
 for zone in /sys/class/thermal/thermal_zone*; do echo "$zone: $(cat "$zone/type")"; done
 ```
 
-- If no CPU-related thermal zone is exposed by your kernel/device, temperature remains unavailable and the dashboard displays `N/A`.
+If no readable thermal zone is exposed by your kernel/device, temperature remains unavailable and the dashboard displays `N/A`.
 
-### Raspberry Pi SoC/GPU temperature not shown
+### Raspberry Pi SoC/GPU temperature or Pi Health is unavailable
 
-The optional `SoC Temp` line requires the Raspberry Pi firmware command `vcgencmd`. Install the package that provides it for your Raspberry Pi OS release, then verify it works:
+The optional SoC temperature and Pi health lines require the Raspberry Pi firmware command `vcgencmd`.
 
 ```bash
 vcgencmd measure_temp
+vcgencmd get_throttled
+vcgencmd measure_clock arm
 ```
 
-Expected output looks similar to `temp=52.1'C`. If `vcgencmd` is missing or returns an error, the dashboard continues without the SoC/GPU temperature line.
+If `vcgencmd` is missing or returns an error, the dashboard continues with available sysfs data.
 
 ### No Wi-Fi data shown
 
@@ -187,6 +259,7 @@ ip route get 1.1.1.1
 
 - Check general connectivity and ICMP availability.
 - Some environments block ICMP echo requests.
+- Use `--ping-target` for a local target or `--no-ping` to disable ping checks.
 
 ### Fan speed always `N/A`
 
@@ -197,11 +270,14 @@ ip route get 1.1.1.1
 
 ## Customization Ideas
 
-You can easily adapt the script for your setup:
+You can adapt the script for your setup:
 
 - Change refresh rate (`time.sleep(1)`).
 - Adjust thermal/load color thresholds.
-- Switch ping target from `1.1.1.1` to another host.
+- Switch ping target with `--ping-target`.
+- Disable ping with `--no-ping`.
+- Use compact mode with `--compact` for small displays.
+- Add custom GPIO, LED, buzzer, notification, or shutdown behavior with `--alert-command`.
 - Add per-core CPU stats from `/proc/stat`.
 - Track additional sensors via hwmon.
 - Add CSV/JSON logging if historical trend analysis is needed.
