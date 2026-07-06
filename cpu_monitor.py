@@ -101,10 +101,36 @@ def clamp_line_width(text, max_cols):
     return "".join(out) + "…"
 
 
+CPU_TEMP_TYPE_KEYWORDS = ("cpu", "soc", "thermal", "x86_pkg_temp")
+
+
+def find_cpu_temp_path():
+    """Return the best matching CPU temperature sysfs path, or None."""
+    for type_path in glob("/sys/class/thermal/thermal_zone*/type"):
+        try:
+            with open(type_path, "r") as f:
+                zone_type = f.read().strip().lower()
+        except (FileNotFoundError, OSError):
+            continue
+
+        if any(keyword in zone_type for keyword in CPU_TEMP_TYPE_KEYWORDS):
+            return os.path.join(os.path.dirname(type_path), "temp")
+
+    return None
+
+
 def get_cpu_temp():
-    """Read CPU temperature (°C) from system."""
-    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-        millideg = int(f.read().strip())
+    """Read CPU temperature (°C) from system, or None if unavailable."""
+    temp_path = find_cpu_temp_path()
+    if temp_path is None:
+        return None
+
+    try:
+        with open(temp_path, "r") as f:
+            millideg = int(f.read().strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
     return millideg / 1000.0
 
 
@@ -495,7 +521,11 @@ def main():
             cpu_usage = (1 - (idle - prev_idle) / (total - prev_total)) * 100 if total != prev_total else 0
             prev_idle, prev_total = idle, total
             temp_c = get_cpu_temp()
-            temp_f = temp_c * 9 / 5 + 32
+            temp_text = (
+                f"{color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_c * 9 / 5 + 32:5.2f}°F{RESET}"
+                if temp_c is not None
+                else "N/A"
+            )
             fan_rpm = read_fan_speed_rpm()
 
             mem_total, mem_used = read_memory_usage()
@@ -565,7 +595,7 @@ def main():
 
             print(CURSOR_HOME, end="")
             print(f"🖥️  Hostname: {hostname}{CLEAR_LINE}")
-            print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
+            print(f"🌡️  CPU Temp: {temp_text}{CLEAR_LINE}")
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
             print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
             print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
