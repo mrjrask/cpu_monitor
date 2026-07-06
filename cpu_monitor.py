@@ -57,7 +57,7 @@ def resize_terminal(cols=TERMINAL_COLS, rows=14):
 
 def calculate_required_rows(storage_line_count, extra_metric_rows=0):
     """Calculate terminal rows required for the current rendered output."""
-    base_rows = 14
+    base_rows = 15
     extra_storage_rows = max(storage_line_count - 1, 0)
     return base_rows + extra_storage_rows + extra_metric_rows
 
@@ -101,10 +101,36 @@ def clamp_line_width(text, max_cols):
     return "".join(out) + "…"
 
 
+CPU_TEMP_TYPE_KEYWORDS = ("cpu", "soc", "thermal", "x86_pkg_temp")
+
+
+def find_cpu_temp_path():
+    """Return the best matching CPU temperature sysfs path, or None."""
+    for type_path in glob("/sys/class/thermal/thermal_zone*/type"):
+        try:
+            with open(type_path, "r") as f:
+                zone_type = f.read().strip().lower()
+        except (FileNotFoundError, OSError):
+            continue
+
+        if any(keyword in zone_type for keyword in CPU_TEMP_TYPE_KEYWORDS):
+            return os.path.join(os.path.dirname(type_path), "temp")
+
+    return None
+
+
 def get_cpu_temp():
-    """Read CPU temperature (°C) from system."""
-    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-        millideg = int(f.read().strip())
+    """Read CPU temperature (°C) from system, or None if unavailable."""
+    temp_path = find_cpu_temp_path()
+    if temp_path is None:
+        return None
+
+    try:
+        with open(temp_path, "r") as f:
+            millideg = int(f.read().strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
     return millideg / 1000.0
 
 
@@ -113,6 +139,21 @@ def read_pi_vcgencmd_temp():
     try:
         result = subprocess.run(
             ["vcgencmd", "measure_temp"],
+def read_cpu_frequency_mhz():
+    """Return current CPU frequency in MHz, or None if unavailable."""
+    sysfs_path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+
+    try:
+        with open(sysfs_path, "r") as f:
+            freq_khz = int(f.read().strip())
+        if freq_khz > 0:
+            return freq_khz / 1000.0
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["vcgencmd", "measure_clock", "arm"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -132,6 +173,12 @@ def read_pi_vcgencmd_temp():
         return float(match.group(1))
     except ValueError:
         return None
+
+        freq_hz = int(match.group(1))
+    except ValueError:
+        return None
+
+    return freq_hz / 1_000_000.0 if freq_hz > 0 else None
 
 
 def read_fan_speed_rpm():
@@ -268,6 +315,43 @@ def read_mounted_storage_details():
 
     return sorted(details, key=lambda item: (item["disk_name"], item["mountpoint"]))
 
+
+def read_pi_throttled_status():
+    """Return Raspberry Pi throttling/undervoltage status text, or N/A if unavailable."""
+    bit_messages = [
+        (0, "Undervoltage now"),
+        (1, "Frequency capped now"),
+        (2, "Throttled now"),
+        (3, "Soft temperature limit now"),
+        (16, "Undervoltage occurred"),
+        (17, "Frequency capped occurred"),
+        (18, "Throttling occurred"),
+        (19, "Soft temperature limit occurred"),
+    ]
+
+    try:
+        result = subprocess.run(
+            ["vcgencmd", "get_throttled"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except FileNotFoundError:
+        return "N/A"
+    except Exception:
+        return "N/A"
+
+    if result.returncode != 0:
+        return "N/A"
+
+    match = re.search(r"throttled=0x([0-9a-fA-F]+)", result.stdout.strip())
+    if not match:
+        return "N/A"
+
+    throttled_bits = int(match.group(1), 16)
+    active_messages = [message for bit, message in bit_messages if throttled_bits & (1 << bit)]
+    return ", ".join(active_messages) if active_messages else "OK"
 
 def color_for_cpu(usage):
     if usage >= 90.0:
@@ -528,6 +612,8 @@ def main():
             display_temp_c = temp_c if temp_c is not None else pi_soc_temp_c
             display_temp_f = display_temp_c * 9 / 5 + 32 if display_temp_c is not None else None
             fan_rpm = read_fan_speed_rpm()
+            cpu_freq_mhz = read_cpu_frequency_mhz()
+            pi_health = read_pi_throttled_status()
 
             mem_total, mem_used = read_memory_usage()
             mem_pct = mem_used / mem_total * 100
@@ -612,8 +698,12 @@ def main():
                     f"🔥  SoC Temp: {color_for_temp(pi_soc_temp_c)}"
                     f"{pi_soc_temp_c:5.2f}°C / {pi_soc_temp_f:5.2f}°F{RESET}{CLEAR_LINE}"
                 )
+            print(f"🌡️  CPU Temp: {temp_text}{CLEAR_LINE}")
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
+            print(f"⚡  Pi Health: {pi_health}{CLEAR_LINE}")
             print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
+            cpu_freq_text = f"{cpu_freq_mhz:.0f} MHz" if cpu_freq_mhz is not None else "N/A"
+            print(f"⏱️  CPU Freq: {cpu_freq_text}{CLEAR_LINE}")
             print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
             max_storage_chars = max(TERMINAL_COLS - display_width(STORAGE_PREFIX), 0)
             first_storage = clamp_line_width(storage_lines[0], max_storage_chars)
