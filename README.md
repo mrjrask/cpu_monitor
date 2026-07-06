@@ -2,13 +2,14 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU utilization, CPU frequency, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time board identification, CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
 ## Features
 
 - **Live terminal dashboard** with 1-second refresh intervals.
+- **Board identification** from Raspberry Pi / Linux device tree metadata.
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available, shown separately when sysfs CPU temperature is also available or used as a fallback when sysfs is missing.
 - **CPU usage** with colorized load thresholds.
@@ -92,8 +93,8 @@ Stop with `Ctrl+C`.
 ## Dashboard Fields
 
 - `Hostname`: system hostname.
-- `CPU Temp`: CPU die temperature in °C / °F. If sysfs CPU temperature is unavailable, the Raspberry Pi `vcgencmd measure_temp` value is used as a fallback when available.
-- `SoC Temp`: Raspberry Pi SoC/GPU temperature from `vcgencmd measure_temp`, shown when both sysfs CPU temperature and `vcgencmd` temperature are available.
+- `Board`: board model reported by device tree metadata, or `N/A`.
+- `CPU Temp`: CPU die temperature in °C / °F.
 - `Fan Speed`: first detected fan RPM, or `N/A`.
 - `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
