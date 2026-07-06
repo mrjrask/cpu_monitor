@@ -11,7 +11,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
 - **Live terminal dashboard** with 1-second refresh intervals.
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **CPU usage** with colorized load thresholds.
-- **Fan RPM** detection from common hwmon paths.
+- **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
 - **Memory and storage** usage with human-readable units.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
@@ -88,7 +88,7 @@ Stop with `Ctrl+C`.
 
 - `Hostname`: system hostname.
 - `CPU Temp`: CPU die temperature in °C / °F.
-- `Fan Speed`: first detected fan RPM, or `N/A`.
+- `Fan Speed`: first detected fan RPM; if RPM is unavailable, a fan cooling-device state such as `state 2/4`; otherwise `N/A`.
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: used / total storage for `/` and percentage.
@@ -124,7 +124,7 @@ Stop with `Ctrl+C`.
 
 Because Linux hardware interfaces vary by board, kernel, and distro, some metrics are best-effort:
 
-- **Fan speed**: checks common `fan1_input` paths under hwmon.
+- **Fan speed**: checks common `fan1_input` paths under hwmon first. Some Raspberry Pi fans and overlays expose cooling state rather than tachometer RPM, so the script also checks fan-like `/sys/class/thermal/cooling_device*` entries and may display a state such as `state 2/4`.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`.
 
@@ -171,6 +171,7 @@ ip route get 1.1.1.1
 ### Fan speed always `N/A`
 
 - Your fan controller may expose a different hwmon path or label.
+- Some Raspberry Pi fans do not report RPM at all; if they expose `/sys/class/thermal/cooling_device*/cur_state`, the dashboard shows that state instead.
 
 ---
 

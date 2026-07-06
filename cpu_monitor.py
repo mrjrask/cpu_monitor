@@ -115,6 +115,7 @@ def read_fan_speed_rpm():
         "/sys/class/hwmon/hwmon*/fan1_input",
     ]
 
+    # Prefer true tachometer data when a driver exposes it through hwmon.
     for pattern in fan_paths:
         for path in glob(pattern):
             try:
@@ -126,6 +127,75 @@ def read_fan_speed_rpm():
                 continue
 
     return None
+
+
+def read_fan_cooling_state():
+    """Return the first fan-like thermal cooling-device state, or None.
+
+    Some Raspberry Pi fan drivers expose a thermal cooling device instead of a
+    tachometer. In that case there is no RPM value, but ``cur_state`` and
+    ``max_state`` still describe the requested cooling level.
+    """
+    fan_type_keywords = ("fan", "pwm-fan", "gpio-fan")
+
+    for type_path in glob("/sys/class/thermal/cooling_device*/type"):
+        device_dir = os.path.dirname(type_path)
+        try:
+            with open(type_path, "r") as f:
+                cooling_type = f.read().strip()
+        except (FileNotFoundError, OSError):
+            continue
+
+        cooling_type_lower = cooling_type.lower()
+        if not any(keyword in cooling_type_lower for keyword in fan_type_keywords):
+            continue
+
+        try:
+            with open(os.path.join(device_dir, "cur_state"), "r") as f:
+                cur_state = int(f.read().strip())
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+
+        max_state = None
+        try:
+            with open(os.path.join(device_dir, "max_state"), "r") as f:
+                max_state = int(f.read().strip())
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+
+        time_in_state = {}
+        try:
+            with open(os.path.join(device_dir, "stats", "time_in_state"), "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        time_in_state[int(parts[0])] = int(parts[1])
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+
+        return {
+            "type": cooling_type,
+            "cur_state": cur_state,
+            "max_state": max_state,
+            "time_in_state": time_in_state,
+            "path": device_dir,
+        }
+
+    return None
+
+
+def format_fan_status(rpm, cooling_state=None):
+    """Format fan RPM or cooling-state fallback for display."""
+    if rpm is not None:
+        return str(rpm)
+    if cooling_state is None:
+        return "N/A"
+
+    cur_state = cooling_state["cur_state"]
+    max_state = cooling_state.get("max_state")
+    if max_state is not None:
+        return f"state {cur_state}/{max_state}"
+    return f"state {cur_state}"
 
 
 def read_cpu_times():
@@ -497,6 +567,7 @@ def main():
             temp_c = get_cpu_temp()
             temp_f = temp_c * 9 / 5 + 32
             fan_rpm = read_fan_speed_rpm()
+            fan_cooling_state = None if fan_rpm is not None else read_fan_cooling_state()
 
             mem_total, mem_used = read_memory_usage()
             mem_pct = mem_used / mem_total * 100
@@ -566,7 +637,7 @@ def main():
             print(CURSOR_HOME, end="")
             print(f"🖥️  Hostname: {hostname}{CLEAR_LINE}")
             print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
-            print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
+            print(f"🌀  Fan Speed: {format_fan_status(fan_rpm, fan_cooling_state)}{CLEAR_LINE}")
             print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
             print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
             max_storage_chars = max(TERMINAL_COLS - display_width(STORAGE_PREFIX), 0)
