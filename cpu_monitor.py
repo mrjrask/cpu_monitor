@@ -411,7 +411,7 @@ def pi_health_is_alert(pi_health):
     """Return True when Raspberry Pi health text indicates an active alert."""
     if not pi_health or pi_health in {"OK", "N/A"}:
         return False
-    return any(token in pi_health for token in (" now", "Undervoltage", "Throttled", "Soft temperature"))
+    return any(token in pi_health for token in (" now", "Undervoltage", "Throttled", "Throttling", "Soft temperature"))
 
 
 def maybe_run_alert(config, reasons, alert_active):
@@ -686,7 +686,7 @@ def main():
     prev_rx, prev_tx = read_network_bytes()
     prev_time = time.monotonic()
 
-    next_ping_time = prev_time if config.ping_enabled else float("inf")
+    next_ping_time = prev_time + random.uniform(10, 40) if config.ping_enabled else float("inf")
     last_ping_avg = None
     last_ping_error = None
     next_network_details_time = prev_time
