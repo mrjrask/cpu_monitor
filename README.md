@@ -2,7 +2,7 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time CPU temperature, CPU utilization, fan speed, Raspberry Pi throttling/undervoltage health, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
@@ -12,6 +12,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **CPU usage** with colorized load thresholds.
 - **Fan RPM** detection from common hwmon paths.
+- **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, frequency cap, throttling, and soft temperature limit flags when available.
 - **Memory and storage** usage with human-readable units.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
@@ -44,8 +45,9 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
   - `ping`
   - `ip` (from `iproute2`)
   - `iw` (for Wi-Fi details)
+  - `vcgencmd` (optional, for Raspberry Pi health/throttling details)
 
-> If `ip` or `iw` are missing, the script still runs, but some network/Wi-Fi details may show as unavailable.
+> If `ip`, `iw`, or `vcgencmd` are missing, the script still runs, but some network/Wi-Fi/Pi health details may show as unavailable.
 
 ---
 
@@ -89,6 +91,7 @@ Stop with `Ctrl+C`.
 - `Hostname`: system hostname.
 - `CPU Temp`: CPU die temperature in °C / °F.
 - `Fan Speed`: first detected fan RPM, or `N/A`.
+- `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: used / total storage for `/` and percentage.
@@ -127,6 +130,7 @@ Because Linux hardware interfaces vary by board, kernel, and distro, some metric
 - **Fan speed**: checks common `fan1_input` paths under hwmon.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`.
+- **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
 
