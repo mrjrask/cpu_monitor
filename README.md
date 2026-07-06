@@ -2,7 +2,7 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU utilization, fan speed, Raspberry Pi throttling/undervoltage health, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time CPU temperature, CPU utilization, CPU frequency, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
@@ -11,6 +11,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, Raspber
 - **Live terminal dashboard** with 1-second refresh intervals.
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **CPU usage** with colorized load thresholds.
+- **CPU frequency** in MHz from sysfs, falling back to `vcgencmd` on Raspberry Pi.
 - **Fan RPM** detection from common hwmon paths.
 - **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, frequency cap, throttling, and soft temperature limit flags when available.
 - **Memory and storage** usage with human-readable units.
@@ -36,7 +37,8 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, Raspber
   - `/proc/stat`
   - `/proc/meminfo`
   - `/proc/net/dev`
-  - `/sys/class/thermal/thermal_zone*/temp`
+  - `/sys/class/thermal/thermal_zone0/temp`
+  - `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` (optional CPU frequency source)
 
 ### Software
 
@@ -45,7 +47,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, Raspber
   - `ping`
   - `ip` (from `iproute2`)
   - `iw` (for Wi-Fi details)
-  - `vcgencmd` (optional, for Raspberry Pi health/throttling details)
+  - `vcgencmd` (optional fallback for Raspberry Pi CPU frequency)
 
 > If `ip`, `iw`, or `vcgencmd` are missing, the script still runs, but some network/Wi-Fi/Pi health details may show as unavailable.
 
@@ -93,6 +95,7 @@ Stop with `Ctrl+C`.
 - `Fan Speed`: first detected fan RPM, or `N/A`.
 - `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
+- `CPU Freq`: current CPU frequency in MHz, read from sysfs or `vcgencmd`; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: used / total storage for `/` and percentage.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, and `Mb/s`.
@@ -127,6 +130,7 @@ Stop with `Ctrl+C`.
 
 Because Linux hardware interfaces vary by board, kernel, and distro, some metrics are best-effort:
 
+- **CPU frequency**: prefers `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` in kHz, then falls back to `vcgencmd measure_clock arm` in Hz.
 - **Fan speed**: checks common `fan1_input` paths under hwmon.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`.
