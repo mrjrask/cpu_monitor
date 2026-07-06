@@ -13,6 +13,7 @@ This script shows real-time CPU temperature, CPU utilization, CPU frequency, fan
 - **CPU usage** with colorized load thresholds.
 - **CPU frequency** in MHz from sysfs, falling back to `vcgencmd` on Raspberry Pi.
 - **Fan RPM** detection from common hwmon paths.
+- **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, frequency cap, throttling, and soft temperature limit flags when available.
 - **Memory and storage** usage with human-readable units.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
@@ -48,7 +49,7 @@ This script shows real-time CPU temperature, CPU utilization, CPU frequency, fan
   - `iw` (for Wi-Fi details)
   - `vcgencmd` (optional fallback for Raspberry Pi CPU frequency)
 
-> If `ip` or `iw` are missing, the script still runs, but some network/Wi-Fi details may show as unavailable.
+> If `ip`, `iw`, or `vcgencmd` are missing, the script still runs, but some network/Wi-Fi/Pi health details may show as unavailable.
 
 ---
 
@@ -92,6 +93,7 @@ Stop with `Ctrl+C`.
 - `Hostname`: system hostname.
 - `CPU Temp`: CPU die temperature in °C / °F.
 - `Fan Speed`: first detected fan RPM, or `N/A`.
+- `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `CPU Freq`: current CPU frequency in MHz, read from sysfs or `vcgencmd`; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
@@ -132,6 +134,7 @@ Because Linux hardware interfaces vary by board, kernel, and distro, some metric
 - **Fan speed**: checks common `fan1_input` paths under hwmon.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`.
+- **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
 
@@ -139,17 +142,17 @@ If a metric cannot be collected, the dashboard displays `N/A` rather than failin
 
 ## Troubleshooting
 
-### `CPU Temp` fails or script exits on startup
+### `CPU Temp` shows `N/A`
 
-Your system may not expose `/sys/class/thermal/thermal_zone0/temp`.
+The monitor auto-detects CPU-related thermal zones by checking `/sys/class/thermal/thermal_zone*/type` for names such as `cpu-thermal`, `soc-thermal`, and `x86_pkg_temp`, then reading the sibling `temp` file.
 
-- Confirm path exists:
+- Confirm thermal zones exist and inspect their labels:
 
 ```bash
-cat /sys/class/thermal/thermal_zone0/temp
+for zone in /sys/class/thermal/thermal_zone*; do echo "$zone: $(cat "$zone/type")"; done
 ```
 
-- If your board uses a different thermal zone, update `get_cpu_temp()` accordingly.
+- If no CPU-related thermal zone is exposed by your kernel/device, temperature remains unavailable and the dashboard displays `N/A`.
 
 ### No Wi-Fi data shown
 
