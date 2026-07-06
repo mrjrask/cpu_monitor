@@ -57,7 +57,7 @@ def resize_terminal(cols=TERMINAL_COLS, rows=14):
 
 def calculate_required_rows(storage_line_count):
     """Calculate terminal rows required for the current rendered output."""
-    base_rows = 14
+    base_rows = 15
     extra_storage_rows = max(storage_line_count - 1, 0)
     return base_rows + extra_storage_rows
 
@@ -99,6 +99,25 @@ def clamp_line_width(text, max_cols):
         used += ch_width
 
     return "".join(out) + "…"
+
+
+def read_pi_model():
+    """Return the board model from device tree metadata, or None if unavailable."""
+    model_paths = [
+        "/proc/device-tree/model",
+        "/sys/firmware/devicetree/base/model",
+    ]
+
+    for path in model_paths:
+        try:
+            with open(path, "rb") as f:
+                model = f.read().rstrip(b"\x00").decode("utf-8", errors="replace").strip()
+            if model:
+                return model
+        except (FileNotFoundError, OSError):
+            continue
+
+    return None
 
 
 def get_cpu_temp():
@@ -458,6 +477,7 @@ def main():
     global _needs_full_refresh
 
     hostname = socket.gethostname()
+    board_model = read_pi_model()
 
     last_resize_rows = None
     clear_terminal()
@@ -565,6 +585,7 @@ def main():
 
             print(CURSOR_HOME, end="")
             print(f"🖥️  Hostname: {hostname}{CLEAR_LINE}")
+            print(f"🥧  Board: {board_model or 'N/A'}{CLEAR_LINE}")
             print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
             print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")

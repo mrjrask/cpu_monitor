@@ -2,13 +2,14 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time board identification, CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
 ## Features
 
 - **Live terminal dashboard** with 1-second refresh intervals.
+- **Board identification** from Raspberry Pi / Linux device tree metadata.
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **CPU usage** with colorized load thresholds.
 - **Fan RPM** detection from common hwmon paths.
@@ -87,6 +88,7 @@ Stop with `Ctrl+C`.
 ## Dashboard Fields
 
 - `Hostname`: system hostname.
+- `Board`: board model reported by device tree metadata, or `N/A`.
 - `CPU Temp`: CPU die temperature in °C / °F.
 - `Fan Speed`: first detected fan RPM, or `N/A`.
 - `CPU Usage`: aggregate CPU utilization percentage.
