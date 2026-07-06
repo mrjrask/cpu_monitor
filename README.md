@@ -13,9 +13,7 @@ This script shows real-time board identification, CPU temperature, CPU utilizati
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
 - **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available, shown separately when sysfs CPU temperature is also available or used as a fallback when sysfs is missing.
 - **CPU usage** with colorized load thresholds.
-- **CPU frequency** in MHz from sysfs, falling back to `vcgencmd` on Raspberry Pi.
-- **Fan RPM** detection from common hwmon paths.
-- **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, frequency cap, throttling, and soft temperature limit flags when available.
+- **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
 - **Memory and storage** usage with human-readable units.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
@@ -193,6 +191,7 @@ ip route get 1.1.1.1
 ### Fan speed always `N/A`
 
 - Your fan controller may expose a different hwmon path or label.
+- Some Raspberry Pi fans do not report RPM at all; if they expose `/sys/class/thermal/cooling_device*/cur_state`, the dashboard shows that state instead.
 
 ---
 
