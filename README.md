@@ -2,14 +2,16 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
 
-This script shows real-time CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
+This script shows real-time board identification, CPU temperature, CPU utilization, fan speed, memory/storage usage, network throughput, connection details, Wi-Fi network name/metrics, and periodic ping latency in a compact dashboard.
 
 ---
 
 ## Features
 
 - **Live terminal dashboard** with 1-second refresh intervals.
+- **Board identification** from Raspberry Pi / Linux device tree metadata.
 - **CPU temperature** in °C and °F with colorized thermal thresholds.
+- **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available, shown separately when sysfs CPU temperature is also available or used as a fallback when sysfs is missing.
 - **CPU usage** with colorized load thresholds.
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
 - **Memory and storage** usage with human-readable units.
@@ -36,6 +38,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
   - `/proc/meminfo`
   - `/proc/net/dev`
   - `/sys/class/thermal/thermal_zone0/temp`
+  - `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` (optional CPU frequency source)
 
 ### Software
 
@@ -44,8 +47,9 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
   - `ping`
   - `ip` (from `iproute2`)
   - `iw` (for Wi-Fi details)
+  - `vcgencmd` (optional, Raspberry Pi firmware command used for SoC/GPU temperature)
 
-> If `ip` or `iw` are missing, the script still runs, but some network/Wi-Fi details may show as unavailable.
+> If `ip` or `iw` are missing, the script still runs, but some network/Wi-Fi details may show as unavailable. If `vcgencmd` is missing, the script skips the Raspberry Pi SoC/GPU temperature reading and continues using sysfs CPU temperature when available.
 
 ---
 
@@ -87,9 +91,12 @@ Stop with `Ctrl+C`.
 ## Dashboard Fields
 
 - `Hostname`: system hostname.
+- `Board`: board model reported by device tree metadata, or `N/A`.
 - `CPU Temp`: CPU die temperature in °C / °F.
-- `Fan Speed`: first detected fan RPM; if RPM is unavailable, a fan cooling-device state such as `state 2/4`; otherwise `N/A`.
+- `Fan Speed`: first detected fan RPM, or `N/A`.
+- `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
+- `CPU Freq`: current CPU frequency in MHz, read from sysfs or `vcgencmd`; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: used / total storage for `/` and percentage.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, and `Mb/s`.
@@ -124,9 +131,12 @@ Stop with `Ctrl+C`.
 
 Because Linux hardware interfaces vary by board, kernel, and distro, some metrics are best-effort:
 
-- **Fan speed**: checks common `fan1_input` paths under hwmon first. Some Raspberry Pi fans and overlays expose cooling state rather than tachometer RPM, so the script also checks fan-like `/sys/class/thermal/cooling_device*` entries and may display a state such as `state 2/4`.
+- **CPU frequency**: prefers `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` in kHz, then falls back to `vcgencmd measure_clock arm` in Hz.
+- **Fan speed**: checks common `fan1_input` paths under hwmon.
+- **Raspberry Pi SoC/GPU temperature**: optionally runs `vcgencmd measure_temp` and parses output like `temp=52.1'C`.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`.
+- **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
 
@@ -134,17 +144,27 @@ If a metric cannot be collected, the dashboard displays `N/A` rather than failin
 
 ## Troubleshooting
 
-### `CPU Temp` fails or script exits on startup
+### `CPU Temp` shows `N/A`
 
-Your system may not expose `/sys/class/thermal/thermal_zone0/temp`.
+The monitor auto-detects CPU-related thermal zones by checking `/sys/class/thermal/thermal_zone*/type` for names such as `cpu-thermal`, `soc-thermal`, and `x86_pkg_temp`, then reading the sibling `temp` file.
 
-- Confirm path exists:
+- Confirm thermal zones exist and inspect their labels:
 
 ```bash
-cat /sys/class/thermal/thermal_zone0/temp
+for zone in /sys/class/thermal/thermal_zone*; do echo "$zone: $(cat "$zone/type")"; done
 ```
 
-- If your board uses a different thermal zone, update `get_cpu_temp()` accordingly.
+- If no CPU-related thermal zone is exposed by your kernel/device, temperature remains unavailable and the dashboard displays `N/A`.
+
+### Raspberry Pi SoC/GPU temperature not shown
+
+The optional `SoC Temp` line requires the Raspberry Pi firmware command `vcgencmd`. Install the package that provides it for your Raspberry Pi OS release, then verify it works:
+
+```bash
+vcgencmd measure_temp
+```
+
+Expected output looks similar to `temp=52.1'C`. If `vcgencmd` is missing or returns an error, the dashboard continues without the SoC/GPU temperature line.
 
 ### No Wi-Fi data shown
 
