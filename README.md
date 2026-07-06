@@ -35,7 +35,7 @@ This script shows real-time CPU temperature, CPU utilization, fan speed, memory/
   - `/proc/stat`
   - `/proc/meminfo`
   - `/proc/net/dev`
-  - `/sys/class/thermal/thermal_zone0/temp`
+  - `/sys/class/thermal/thermal_zone*/temp`
 
 ### Software
 
@@ -134,17 +134,17 @@ If a metric cannot be collected, the dashboard displays `N/A` rather than failin
 
 ## Troubleshooting
 
-### `CPU Temp` fails or script exits on startup
+### `CPU Temp` shows `N/A`
 
-Your system may not expose `/sys/class/thermal/thermal_zone0/temp`.
+The monitor auto-detects CPU-related thermal zones by checking `/sys/class/thermal/thermal_zone*/type` for names such as `cpu-thermal`, `soc-thermal`, and `x86_pkg_temp`, then reading the sibling `temp` file.
 
-- Confirm path exists:
+- Confirm thermal zones exist and inspect their labels:
 
 ```bash
-cat /sys/class/thermal/thermal_zone0/temp
+for zone in /sys/class/thermal/thermal_zone*; do echo "$zone: $(cat "$zone/type")"; done
 ```
 
-- If your board uses a different thermal zone, update `get_cpu_temp()` accordingly.
+- If no CPU-related thermal zone is exposed by your kernel/device, temperature remains unavailable and the dashboard displays `N/A`.
 
 ### No Wi-Fi data shown
 
