@@ -55,11 +55,11 @@ def resize_terminal(cols=TERMINAL_COLS, rows=14):
     print(f"\033[8;{rows};{cols}t", end="", flush=True)
 
 
-def calculate_required_rows(storage_line_count):
+def calculate_required_rows(storage_line_count, extra_metric_rows=0):
     """Calculate terminal rows required for the current rendered output."""
     base_rows = 14
     extra_storage_rows = max(storage_line_count - 1, 0)
-    return base_rows + extra_storage_rows
+    return base_rows + extra_storage_rows + extra_metric_rows
 
 
 
@@ -106,6 +106,32 @@ def get_cpu_temp():
     with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
         millideg = int(f.read().strip())
     return millideg / 1000.0
+
+
+def read_pi_vcgencmd_temp():
+    """Read Raspberry Pi SoC/GPU temperature (°C) via vcgencmd, if available."""
+    try:
+        result = subprocess.run(
+            ["vcgencmd", "measure_temp"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    match = re.search(r"temp=([+-]?\d+(?:\.\d+)?)'C", result.stdout.strip())
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
 
 
 def read_fan_speed_rpm():
@@ -494,8 +520,13 @@ def main():
             idle, total = read_cpu_times()
             cpu_usage = (1 - (idle - prev_idle) / (total - prev_total)) * 100 if total != prev_total else 0
             prev_idle, prev_total = idle, total
-            temp_c = get_cpu_temp()
-            temp_f = temp_c * 9 / 5 + 32
+            try:
+                temp_c = get_cpu_temp()
+            except (FileNotFoundError, OSError, ValueError):
+                temp_c = None
+            pi_soc_temp_c = read_pi_vcgencmd_temp()
+            display_temp_c = temp_c if temp_c is not None else pi_soc_temp_c
+            display_temp_f = display_temp_c * 9 / 5 + 32 if display_temp_c is not None else None
             fan_rpm = read_fan_speed_rpm()
 
             mem_total, mem_used = read_memory_usage()
@@ -520,7 +551,10 @@ def main():
                     f"{format_bytes(stor_total - stor_used)} free ({stor_pct:5.1f}% used)"
                 ]
 
-            required_rows = calculate_required_rows(len(storage_lines))
+            required_rows = calculate_required_rows(
+                len(storage_lines),
+                extra_metric_rows=1 if temp_c is not None and pi_soc_temp_c is not None else 0,
+            )
             if required_rows != last_resize_rows:
                 resize_terminal(cols=TERMINAL_COLS, rows=required_rows)
                 last_resize_rows = required_rows
@@ -565,7 +599,19 @@ def main():
 
             print(CURSOR_HOME, end="")
             print(f"🖥️  Hostname: {hostname}{CLEAR_LINE}")
-            print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
+            if display_temp_c is not None:
+                print(
+                    f"🌡️  CPU Temp: {color_for_temp(display_temp_c)}"
+                    f"{display_temp_c:5.2f}°C / {display_temp_f:5.2f}°F{RESET}{CLEAR_LINE}"
+                )
+            else:
+                print(f"🌡️  CPU Temp: N/A{CLEAR_LINE}")
+            if temp_c is not None and pi_soc_temp_c is not None:
+                pi_soc_temp_f = pi_soc_temp_c * 9 / 5 + 32
+                print(
+                    f"🔥  SoC Temp: {color_for_temp(pi_soc_temp_c)}"
+                    f"{pi_soc_temp_c:5.2f}°C / {pi_soc_temp_f:5.2f}°F{RESET}{CLEAR_LINE}"
+                )
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
             print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
             print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
