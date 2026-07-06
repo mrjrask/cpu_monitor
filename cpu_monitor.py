@@ -57,7 +57,7 @@ def resize_terminal(cols=TERMINAL_COLS, rows=14):
 
 def calculate_required_rows(storage_line_count):
     """Calculate terminal rows required for the current rendered output."""
-    base_rows = 14
+    base_rows = 15
     extra_storage_rows = max(storage_line_count - 1, 0)
     return base_rows + extra_storage_rows
 
@@ -106,6 +106,44 @@ def get_cpu_temp():
     with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
         millideg = int(f.read().strip())
     return millideg / 1000.0
+
+
+def read_cpu_frequency_mhz():
+    """Return current CPU frequency in MHz, or None if unavailable."""
+    sysfs_path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"
+
+    try:
+        with open(sysfs_path, "r") as f:
+            freq_khz = int(f.read().strip())
+        if freq_khz > 0:
+            return freq_khz / 1000.0
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["vcgencmd", "measure_clock", "arm"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    match = re.search(r"frequency\(\d+\)=(\d+)", result.stdout.strip())
+    if not match:
+        return None
+
+    try:
+        freq_hz = int(match.group(1))
+    except ValueError:
+        return None
+
+    return freq_hz / 1_000_000.0 if freq_hz > 0 else None
 
 
 def read_fan_speed_rpm():
@@ -497,6 +535,7 @@ def main():
             temp_c = get_cpu_temp()
             temp_f = temp_c * 9 / 5 + 32
             fan_rpm = read_fan_speed_rpm()
+            cpu_freq_mhz = read_cpu_frequency_mhz()
 
             mem_total, mem_used = read_memory_usage()
             mem_pct = mem_used / mem_total * 100
@@ -568,6 +607,8 @@ def main():
             print(f"🌡️  CPU Temp: {color_for_temp(temp_c)}{temp_c:5.2f}°C / {temp_f:5.2f}°F{RESET}{CLEAR_LINE}")
             print(f"🌀  Fan Speed: {fan_rpm if fan_rpm is not None else 'N/A'}{CLEAR_LINE}")
             print(f"⚙️  CPU Usage: {color_for_cpu(cpu_usage)}{cpu_usage:5.1f}%{RESET}{CLEAR_LINE}")
+            cpu_freq_text = f"{cpu_freq_mhz:.0f} MHz" if cpu_freq_mhz is not None else "N/A"
+            print(f"⏱️  CPU Freq: {cpu_freq_text}{CLEAR_LINE}")
             print(f"🧠  Memory: {format_bytes(mem_used)} / {format_bytes(mem_total)} ({mem_pct:5.1f}%){CLEAR_LINE}")
             max_storage_chars = max(TERMINAL_COLS - display_width(STORAGE_PREFIX), 0)
             first_storage = clamp_line_width(storage_lines[0], max_storage_chars)
