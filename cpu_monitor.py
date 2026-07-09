@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import os
+import platform
 import random
 import re
 import shlex
@@ -58,7 +59,7 @@ class MonitorConfig:
 
 def parse_args():
     """Parse monitor configuration from command-line flags."""
-    parser = argparse.ArgumentParser(description="Terminal CPU monitor for Raspberry Pi and Linux systems.")
+    parser = argparse.ArgumentParser(description="Terminal CPU monitor for Raspberry Pi, Linux, macOS, and Windows systems.")
     parser.add_argument("--ping-target", default="1.1.1.1", help="Host/IP to ping for latency checks.")
     parser.add_argument("--ping-count", type=int, default=3, help="Number of echo requests per ping check.")
     parser.add_argument(
@@ -108,9 +109,33 @@ def _handle_resize(signum, frame):
     _needs_full_refresh = True
 
 
+def supports_ansi():
+    """Return True when ANSI terminal control sequences should be emitted."""
+    return os.name != "nt" or bool(os.environ.get("WT_SESSION") or os.environ.get("ANSICON") or os.environ.get("TERM"))
+
+
+def enable_windows_virtual_terminal():
+    """Enable ANSI escape sequence handling on modern Windows consoles when possible."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
 def clear_terminal():
     """Clear the terminal window and move the cursor to the top left."""
-    print(CLEAR_SCREEN, end="", flush=True)
+    if supports_ansi():
+        print(CLEAR_SCREEN, end="", flush=True)
+    else:
+        os.system("cls" if os.name == "nt" else "clear")
 
 
 def resize_terminal(cols=TERMINAL_COLS, rows=14):
@@ -164,7 +189,7 @@ def clamp_line_width(text, max_cols):
 
 
 def read_pi_model():
-    """Return the board model from device tree metadata, or None if unavailable."""
+    """Return the hardware model or platform description, when available."""
     for path in ("/proc/device-tree/model", "/sys/firmware/devicetree/base/model"):
         try:
             with open(path, "rb") as f:
@@ -173,7 +198,16 @@ def read_pi_model():
                 return model
         except (FileNotFoundError, OSError):
             continue
-    return None
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(["sysctl", "-n", "hw.model"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0 and result.stdout.strip():
+                return f"Mac ({result.stdout.strip()})"
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            pass
+    if platform.system() == "Windows":
+        return platform.platform()
+    return platform.platform() or None
 
 
 def find_cpu_temp_path():
@@ -234,6 +268,7 @@ def read_pi_vcgencmd_temp():
 
 def read_cpu_frequency_mhz():
     """Return current CPU frequency in MHz, or None if unavailable."""
+    system = platform.system()
     try:
         with open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r") as f:
             freq_khz = int(f.read().strip())
@@ -241,6 +276,24 @@ def read_cpu_frequency_mhz():
             return freq_khz / 1000.0
     except (FileNotFoundError, OSError, ValueError):
         pass
+
+    if system == "Darwin":
+        try:
+            result = subprocess.run(["sysctl", "-n", "hw.cpufrequency"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                freq_hz = int(result.stdout.strip())
+                return freq_hz / 1_000_000.0 if freq_hz > 0 else None
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if system == "Windows":
+        try:
+            result = subprocess.run(["wmic", "cpu", "get", "CurrentClockSpeed", "/value"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                match = re.search(r"CurrentClockSpeed=(\d+)", result.stdout)
+                if match:
+                    return float(match.group(1))
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
 
     try:
         result = subprocess.run(
@@ -320,12 +373,42 @@ def format_fan_status(rpm, cooling_state=None):
 
 
 def read_cpu_times():
-    """Read aggregate CPU idle and total times."""
-    with open("/proc/stat", "r") as f:
-        parts = f.readline().split()[1:]
-    times = list(map(int, parts))
-    idle = times[3] + times[4]
-    total = sum(times)
+    """Read aggregate CPU idle and total times across supported platforms."""
+    try:
+        with open("/proc/stat", "r") as f:
+            parts = f.readline().split()[1:]
+        times = list(map(int, parts))
+        idle = times[3] + times[4]
+        total = sum(times)
+        return idle, total
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        pass
+
+    system = platform.system()
+    if system == "Darwin":
+        try:
+            result = subprocess.run(["sysctl", "-n", "kern.cp_time"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                user, nice, system_time, interrupt, idle = [int(value) for value in result.stdout.split()[:5]]
+                return idle, user + nice + system_time + interrupt + idle
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    if system == "Windows":
+        try:
+            import ctypes
+
+            idle_time = ctypes.c_ulonglong()
+            kernel_time = ctypes.c_ulonglong()
+            user_time = ctypes.c_ulonglong()
+            if ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle_time), ctypes.byref(kernel_time), ctypes.byref(user_time)):
+                return idle_time.value, kernel_time.value + user_time.value
+        except Exception:
+            pass
+
+    times = os.times()
+    idle = int(getattr(times, "elapsed", 0) * os.cpu_count())
+    total = idle + int((times.user + times.system + times.children_user + times.children_system) * 100)
     return idle, total
 
 
@@ -333,32 +416,105 @@ def read_network_bytes():
     """Return total received and transmitted bytes for non-loopback interfaces."""
     total_rx = 0
     total_tx = 0
-    with open("/proc/net/dev", "r") as f:
-        for line in f.readlines()[2:]:
-            iface, data = line.split(":", 1)
-            if iface.strip() == "lo":
-                continue
-            fields = data.split()
-            total_rx += int(fields[0])
-            total_tx += int(fields[8])
-    return total_rx, total_tx
+    try:
+        with open("/proc/net/dev", "r") as f:
+            for line in f.readlines()[2:]:
+                iface, data = line.split(":", 1)
+                if iface.strip() == "lo":
+                    continue
+                fields = data.split()
+                total_rx += int(fields[0])
+                total_tx += int(fields[8])
+        return total_rx, total_tx
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        pass
+
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(["netstat", "-ibn"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                seen = set()
+                for line in result.stdout.splitlines()[1:]:
+                    fields = line.split()
+                    if len(fields) >= 9 and fields[0] != "lo0" and fields[0] not in seen:
+                        seen.add(fields[0])
+                        total_rx += int(fields[-5])
+                        total_tx += int(fields[-2])
+                return total_rx, total_tx
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(["netstat", "-e"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    fields = line.split()
+                    if len(fields) == 3 and fields[0].lower() == "bytes":
+                        return int(fields[1]), int(fields[2])
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return 0, 0
 
 
 def read_memory_usage():
     """Return total and used memory in bytes."""
     mem_total = None
     mem_available = None
-    with open("/proc/meminfo", "r") as f:
-        for line in f:
-            if line.startswith("MemTotal:"):
-                mem_total = int(line.split()[1]) * 1024
-            elif line.startswith("MemAvailable:"):
-                mem_available = int(line.split()[1]) * 1024
-            if mem_total and mem_available:
-                break
-    if mem_total is None or mem_available is None:
-        return 0, 0
-    return mem_total, max(mem_total - mem_available, 0)
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1]) * 1024
+                elif line.startswith("MemAvailable:"):
+                    mem_available = int(line.split()[1]) * 1024
+                if mem_total and mem_available:
+                    break
+        if mem_total is not None and mem_available is not None:
+            return mem_total, max(mem_total - mem_available, 0)
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    if platform.system() == "Darwin":
+        try:
+            total_result = subprocess.run(["sysctl", "-n", "hw.memsize"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            page_result = subprocess.run(["pagesize"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            vm_result = subprocess.run(["vm_stat"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if total_result.returncode == page_result.returncode == vm_result.returncode == 0:
+                total = int(total_result.stdout.strip())
+                page_size = int(page_result.stdout.strip())
+                free_pages = 0
+                for line in vm_result.stdout.splitlines():
+                    if line.startswith(("Pages free:", "Pages speculative:")):
+                        free_pages += int(re.sub(r"[^0-9]", "", line))
+                return total, max(total - free_pages * page_size, 0)
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullTotalPhys, max(status.ullTotalPhys - status.ullAvailPhys, 0)
+        except Exception:
+            pass
+    return 0, 0
 
 
 def read_storage_usage(path="/"):
@@ -505,9 +661,10 @@ def format_bytes(num_bytes):
 
 
 def run_ping(target, count):
+    ping_cmd = ["ping", "-n", str(count), target] if platform.system() == "Windows" else ["ping", "-c", str(count), "-n", target]
     try:
         result = subprocess.run(
-            ["ping", "-c", str(count), "-n", target],
+            ping_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -524,13 +681,45 @@ def run_ping(target, count):
                 return float(stats[1]), None
             except Exception:
                 return None, "parse error"
+        average_match = re.search(r"Average\s*=\s*(\d+(?:\.\d+)?)\s*ms", line, flags=re.IGNORECASE)
+        if average_match:
+            return float(average_match.group(1)), None
     return None, "no stats found"
 
 
 def get_active_interface(route_target="1.1.1.1"):
     """Return the default outbound network interface name, or None."""
+    system = platform.system()
+    if system == "Windows":
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        f"$target = '{route_target.replace("'", "''")}'; "
+                        "$ip = [System.Net.Dns]::GetHostAddresses($target) | "
+                        "Where-Object { $_.AddressFamily -in 'InterNetwork','InterNetworkV6' } | "
+                        "Select-Object -First 1; "
+                        "if ($ip) { (Find-NetRoute -RemoteIPAddress $ip.IPAddressToString | "
+                        "Select-Object -First 1).InterfaceAlias }"
+                    ),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().splitlines()[0]
+        except Exception:
+            return None
+        return None
+
+    command = ["route", "get", route_target] if system == "Darwin" else ["ip", "route", "get", route_target]
     try:
-        result = subprocess.run(["ip", "route", "get", route_target], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
     except Exception:
         return None
     if result.returncode != 0:
@@ -540,12 +729,68 @@ def get_active_interface(route_target="1.1.1.1"):
         dev_index = fields.index("dev") + 1
         if dev_index < len(fields):
             return fields[dev_index]
+    if "interface:" in result.stdout:
+        match = re.search(r"interface:\s*(\S+)", result.stdout)
+        if match:
+            return match.group(1)
     return None
 
 
 def is_wireless_interface(interface):
-    """Return True when the interface appears to be a wireless NIC."""
-    return bool(interface and os.path.isdir(f"/sys/class/net/{interface}/wireless"))
+    """Return True when the OS reports the interface as a wireless NIC."""
+    if not interface:
+        return False
+    if os.path.isdir(f"/sys/class/net/{interface}/wireless"):
+        return True
+
+    system = platform.system()
+    if system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["networksetup", "-listallhardwareports"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        hardware_port = None
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("Hardware Port:"):
+                hardware_port = line.split(":", 1)[1].strip().lower()
+            elif line.startswith("Device:"):
+                device = line.split(":", 1)[1].strip()
+                if device == interface and hardware_port in {"wi-fi", "airport"}:
+                    return True
+        return False
+
+    if system == "Windows":
+        escaped_interface = interface.replace("'", "''")
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-NetAdapter -Name '{escaped_interface}' -ErrorAction SilentlyContinue).NdisPhysicalMedium",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        media_type = result.stdout.strip().lower()
+        return any(token in media_type for token in ("802.11", "wireless", "wi-fi", "wifi"))
+
+    return False
 
 
 def read_wireless_signal_dbm(interface):
@@ -707,8 +952,10 @@ def main():
 
     last_resize_rows = None
     alert_active = False
+    enable_windows_virtual_terminal()
     clear_terminal()
-    signal.signal(signal.SIGWINCH, _handle_resize)
+    if hasattr(signal, "SIGWINCH"):
+        signal.signal(signal.SIGWINCH, _handle_resize)
 
     prev_idle, prev_total = read_cpu_times()
     prev_rx, prev_tx = read_network_bytes()
