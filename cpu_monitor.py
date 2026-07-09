@@ -730,13 +730,59 @@ def get_active_interface(route_target="1.1.1.1"):
 
 
 def is_wireless_interface(interface):
-    """Return True when the interface appears to be a wireless NIC."""
+    """Return True when the OS reports the interface as a wireless NIC."""
     if not interface:
         return False
     if os.path.isdir(f"/sys/class/net/{interface}/wireless"):
         return True
-    if platform.system() == "Darwin":
-        return interface.startswith("en")
+
+    system = platform.system()
+    if system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["networksetup", "-listallhardwareports"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        hardware_port = None
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("Hardware Port:"):
+                hardware_port = line.split(":", 1)[1].strip().lower()
+            elif line.startswith("Device:"):
+                device = line.split(":", 1)[1].strip()
+                if device == interface and hardware_port in {"wi-fi", "airport"}:
+                    return True
+        return False
+
+    if system == "Windows":
+        escaped_interface = interface.replace("'", "''")
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-NetAdapter -Name '{escaped_interface}' -ErrorAction SilentlyContinue).NdisPhysicalMedium",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return False
+        if result.returncode != 0:
+            return False
+        media_type = result.stdout.strip().lower()
+        return any(token in media_type for token in ("802.11", "wireless", "wi-fi", "wifi"))
+
     return False
 
 
