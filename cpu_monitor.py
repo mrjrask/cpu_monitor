@@ -436,10 +436,10 @@ def read_network_bytes():
                 seen = set()
                 for line in result.stdout.splitlines()[1:]:
                     fields = line.split()
-                    if len(fields) >= 10 and fields[0] != "lo0" and fields[0] not in seen:
+                    if len(fields) >= 9 and fields[0] != "lo0" and fields[0] not in seen:
                         seen.add(fields[0])
-                        total_rx += int(fields[6])
-                        total_tx += int(fields[9])
+                        total_rx += int(fields[-5])
+                        total_tx += int(fields[-2])
                 return total_rx, total_tx
         except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
             pass
@@ -697,7 +697,14 @@ def get_active_interface(route_target="1.1.1.1"):
                     "powershell",
                     "-NoProfile",
                     "-Command",
-                    "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).InterfaceAlias",
+                    (
+                        f"$target = '{route_target.replace("'", "''")}'; "
+                        "$ip = [System.Net.Dns]::GetHostAddresses($target) | "
+                        "Where-Object { $_.AddressFamily -in 'InterNetwork','InterNetworkV6' } | "
+                        "Select-Object -First 1; "
+                        "if ($ip) { (Find-NetRoute -RemoteIPAddress $ip.IPAddressToString | "
+                        "Select-Object -First 1).InterfaceAlias }"
+                    ),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
