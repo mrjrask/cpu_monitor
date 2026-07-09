@@ -106,6 +106,9 @@ python3 cpu_monitor.py --ping-target 192.168.1.1
 # Use five pings for each latency sample.
 python3 cpu_monitor.py --ping-count 5
 
+# Sample ping latency every 2 to 5 minutes instead of the default 60 to 600 seconds.
+python3 cpu_monitor.py --ping-interval-min 120 --ping-interval-max 300
+
 # Disable ICMP checks on isolated networks or locked-down environments.
 python3 cpu_monitor.py --no-ping
 
@@ -170,7 +173,7 @@ Because Linux hardware interfaces vary by board, kernel, and distro, some metric
 - **Raspberry Pi SoC/GPU temperature**: optionally runs `vcgencmd measure_temp` and parses output like `temp=52.1'C`.
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
-- **Ping**: requires network reachability and permission to run `ping`; use `--no-ping` to disable.
+- **Ping**: requires network reachability and permission to run `ping`; use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), or `--no-ping` to disable.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
 
@@ -259,7 +262,7 @@ ip route get 1.1.1.1
 
 - Check general connectivity and ICMP availability.
 - Some environments block ICMP echo requests.
-- Use `--ping-target` for a local target or `--no-ping` to disable ping checks.
+- Use `--ping-target` for a local target, tune frequency with `--ping-interval-min` and `--ping-interval-max`, or use `--no-ping` to disable ping checks.
 
 ### Fan speed always `N/A`
 
@@ -275,6 +278,7 @@ You can adapt the script for your setup:
 - Change refresh rate (`time.sleep(1)`).
 - Adjust thermal/load color thresholds.
 - Switch ping target with `--ping-target`.
+- Adjust randomized ping frequency with `--ping-interval-min` and `--ping-interval-max`.
 - Disable ping with `--no-ping`.
 - Use compact mode with `--compact` for small displays.
 - Add custom GPIO, LED, buzzer, notification, or shutdown behavior with `--alert-command`.

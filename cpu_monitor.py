@@ -38,6 +38,8 @@ TERMINAL_COLS = 80
 STORAGE_PREFIX = "💾  Storage: "
 COMPACT_COLS = 64
 CPU_TEMP_TYPE_KEYWORDS = ("cpu", "soc", "thermal", "x86_pkg_temp")
+DEFAULT_PING_INTERVAL_MIN_S = 60.0
+DEFAULT_PING_INTERVAL_MAX_S = 600.0
 
 _needs_full_refresh = False
 
@@ -46,6 +48,8 @@ _needs_full_refresh = False
 class MonitorConfig:
     ping_target: str = "1.1.1.1"
     ping_count: int = 3
+    ping_interval_min_s: float = DEFAULT_PING_INTERVAL_MIN_S
+    ping_interval_max_s: float = DEFAULT_PING_INTERVAL_MAX_S
     ping_enabled: bool = True
     compact: bool = False
     temp_alert_c: float = 75.0
@@ -57,6 +61,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Terminal CPU monitor for Raspberry Pi and Linux systems.")
     parser.add_argument("--ping-target", default="1.1.1.1", help="Host/IP to ping for latency checks.")
     parser.add_argument("--ping-count", type=int, default=3, help="Number of echo requests per ping check.")
+    parser.add_argument(
+        "--ping-interval-min",
+        type=float,
+        default=DEFAULT_PING_INTERVAL_MIN_S,
+        metavar="SECONDS",
+        help="Minimum seconds between periodic ping latency checks.",
+    )
+    parser.add_argument(
+        "--ping-interval-max",
+        type=float,
+        default=DEFAULT_PING_INTERVAL_MAX_S,
+        metavar="SECONDS",
+        help="Maximum seconds between periodic ping latency checks.",
+    )
     parser.add_argument("--no-ping", action="store_true", help="Disable periodic ping latency checks.")
     parser.add_argument("--compact", action="store_true", help="Use shorter, emoji-free output for small displays.")
     parser.add_argument("--temp-alert-c", type=float, default=75.0, help="Temperature threshold for alert hooks.")
@@ -65,9 +83,18 @@ def parse_args():
         help="Shell command to run when entering alert state. Environment includes CPU_MONITOR_ALERT_REASON.",
     )
     args = parser.parse_args()
+    if args.ping_interval_min <= 0:
+        parser.error("--ping-interval-min must be greater than 0")
+    if args.ping_interval_max <= 0:
+        parser.error("--ping-interval-max must be greater than 0")
+    if args.ping_interval_max < args.ping_interval_min:
+        parser.error("--ping-interval-max must be greater than or equal to --ping-interval-min")
+
     return MonitorConfig(
         ping_target=args.ping_target,
         ping_count=max(args.ping_count, 1),
+        ping_interval_min_s=args.ping_interval_min,
+        ping_interval_max_s=args.ping_interval_max,
         ping_enabled=not args.no_ping,
         compact=args.compact,
         temp_alert_c=args.temp_alert_c,
@@ -687,7 +714,7 @@ def main():
     prev_rx, prev_tx = read_network_bytes()
     prev_time = time.monotonic()
 
-    next_ping_time = prev_time + random.uniform(10, 40) if config.ping_enabled else float("inf")
+    next_ping_time = prev_time + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s) if config.ping_enabled else float("inf")
     last_ping_avg = None
     last_ping_error = None
     next_network_details_time = prev_time
@@ -743,7 +770,7 @@ def main():
 
             if config.ping_enabled and now >= next_ping_time:
                 last_ping_avg, last_ping_error = run_ping(config.ping_target, config.ping_count)
-                next_ping_time = now + random.uniform(10, 40)
+                next_ping_time = now + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s)
 
             if now >= next_network_details_time:
                 active_interface = get_active_interface(route_target)
