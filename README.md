@@ -1,6 +1,6 @@
-# Raspberry Pi CPU Monitor
+# Cross-Platform CPU Monitor
 
-A lightweight, terminal-based system monitor for Raspberry Pi and Linux systems.
+A lightweight, terminal-based system monitor for Raspberry Pi, Linux, macOS, and Windows systems.
 
 This script shows real-time board identification, CPU temperature, Raspberry Pi SoC temperature, CPU utilization/frequency, Pi throttling or undervoltage health, fan speed/state, memory/storage usage, network throughput, connection details, Wi-Fi network metrics, and optional ping latency in a compact dashboard.
 
@@ -9,15 +9,15 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 ## Features
 
 - **Live terminal dashboard** with 1-second refresh intervals.
-- **Board identification** from Raspberry Pi / Linux device tree metadata.
-- **CPU temperature auto-detection** from CPU-like Linux thermal zones, with `N/A` fallback instead of startup failure.
+- **Board identification** from Raspberry Pi / Linux device tree metadata, macOS hardware model data, or Windows platform metadata.
+- **CPU temperature auto-detection** from CPU-like Linux thermal zones, with `N/A` fallback on platforms that do not expose temperature through standard library or shell interfaces.
 - **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available.
 - **CPU usage** with colorized load thresholds.
-- **CPU frequency** from sysfs or `vcgencmd measure_clock arm`.
+- **CPU frequency** from Linux sysfs, Raspberry Pi `vcgencmd`, macOS `sysctl`, or Windows WMIC when available.
 - **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, throttling, frequency capping, and soft temperature-limit flags.
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
-- **Memory and storage** usage with human-readable units.
-- **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX.
+- **Memory and storage** usage with human-readable units across Linux, macOS, and Windows.
+- **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX using Linux `/proc`, macOS `netstat`, or Windows `netstat` counters.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
 - **Wi-Fi details** when connected wirelessly:
   - connected network name (SSID)
@@ -36,13 +36,15 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 
 ### Hardware / OS
 
-- Raspberry Pi (recommended) or Linux system with compatible proc/sysfs interfaces.
-- Linux kernel exposing common files like:
+- Raspberry Pi, Linux, macOS, or Windows system. Raspberry Pi/Linux exposes the most hardware-specific metrics; macOS and Windows use best-effort OS commands for portable metrics.
+- On Linux/Raspberry Pi, a kernel exposing common files like:
   - `/proc/stat`
   - `/proc/meminfo`
   - `/proc/net/dev`
   - `/sys/class/thermal/thermal_zone*/type` and sibling `temp` files
   - `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` (optional CPU frequency source)
+- On macOS, built-in commands such as `sysctl`, `vm_stat`, `netstat`, and `route`.
+- On Windows, PowerShell and built-in commands such as `netstat`; WMIC is used for CPU frequency when present.
 
 ### Software
 
@@ -60,11 +62,11 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 
 ## Installation
 
-Clone or copy the project onto your Raspberry Pi / Linux host:
+Clone or copy the project onto your Raspberry Pi, Linux, macOS, or Windows host:
 
 ```bash
 git clone <your-repo-url>
-cd Rpi_cpu_monitor
+cd cpu_monitor
 ```
 
 Make the script executable (optional):
@@ -97,7 +99,7 @@ Stop with `Ctrl+C`.
 python3 cpu_monitor.py --help
 ```
 
-Useful Raspberry Pi examples:
+Useful examples:
 
 ```bash
 # Ping a local gateway instead of the default public resolver.
@@ -126,13 +128,13 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 ## Dashboard Fields
 
 - `Hostname`: system hostname.
-- `Board`: board model reported by device tree metadata, or `N/A`.
-- `CPU Temp`: CPU die temperature in °C / °F. If sysfs CPU temperature is unavailable, the script falls back to Raspberry Pi `vcgencmd measure_temp` when available.
+- `Board`: board/model metadata reported by Linux device tree, macOS `sysctl`, Windows platform data, or `N/A`.
+- `CPU Temp`: CPU die temperature in °C / °F. If Linux sysfs CPU temperature is unavailable, the script falls back to Raspberry Pi `vcgencmd measure_temp` when available; macOS and Windows commonly show `N/A` without vendor-specific sensor tools.
 - `SoC Temp`: Raspberry Pi SoC/GPU temperature from `vcgencmd measure_temp`, shown separately when both CPU and SoC temperatures are available.
 - `Fan Speed`: first detected fan RPM, fan cooling state, or `N/A`.
 - `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
-- `CPU Freq`: current CPU frequency in MHz, read from sysfs or `vcgencmd`; displays `N/A` if unavailable.
+- `CPU Freq`: current CPU frequency in MHz, read from sysfs, `vcgencmd`, macOS `sysctl`, or Windows WMIC; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: mounted storage details and usage percentage.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, or `Mb/s`.
@@ -165,7 +167,7 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 
 ## Notes on Metric Detection
 
-Because Linux hardware interfaces vary by board, kernel, and distro, some metrics are best-effort:
+Because hardware and operating-system interfaces vary by board, kernel, distro, and platform, some metrics are best-effort:
 
 - **CPU temperature**: scans `/sys/class/thermal/thermal_zone*/type` for CPU-like thermal zones and falls back to the first thermal zone if no CPU-like label is found.
 - **CPU frequency**: prefers `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` in kHz, then falls back to `vcgencmd measure_clock arm` in Hz.
@@ -173,7 +175,8 @@ Because Linux hardware interfaces vary by board, kernel, and distro, some metric
 - **Raspberry Pi SoC/GPU temperature**: optionally runs `vcgencmd measure_temp` and parses output like `temp=52.1'C`.
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
-- **Ping**: requires network reachability and permission to run `ping`; use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), or `--no-ping` to disable.
+- **Ping**: requires network reachability and permission to run `ping`; the script uses Unix/macOS `ping -c` and Windows `ping -n` automatically. Use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), or `--no-ping` to disable.
+- **macOS/Windows**: CPU temperature, fan, Raspberry Pi health, and detailed Wi-Fi metrics may display `N/A` because they typically require platform-specific sensor APIs, vendor tools, or elevated permissions not provided by the Python standard library.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
 
