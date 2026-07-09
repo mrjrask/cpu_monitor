@@ -635,7 +635,8 @@ def render_full_dashboard(state):
         print(f"{storage_indent}{clamp_line_width(extra_line, max_storage_chars)}{CLEAR_LINE}")
     print(f"🌐  Network: ↑ {format_network_bits(state['tx_rate'])}{CLEAR_LINE}")
     print(f"             ↓ {format_network_bits(state['rx_rate'])}{CLEAR_LINE}")
-    print(f"🔌  Connection: {state['connection_type'] or 'Unknown'}{f' ({state['active_interface']})' if state['active_interface'] else ''}{CLEAR_LINE}")
+    interface_suffix = f" ({state['active_interface']})" if state['active_interface'] else ""
+    print(f"🔌  Connection: {state['connection_type'] or 'Unknown'}{interface_suffix}{CLEAR_LINE}")
     if state["connection_type"] == "Wi-Fi":
         wifi_details = state["wifi_details"]
         signal_text = (
