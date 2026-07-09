@@ -691,6 +691,7 @@ def get_active_interface(route_target="1.1.1.1"):
     """Return the default outbound network interface name, or None."""
     system = platform.system()
     if system == "Windows":
+        escaped_route_target = route_target.replace("'", "''")
         try:
             result = subprocess.run(
                 [
@@ -698,7 +699,7 @@ def get_active_interface(route_target="1.1.1.1"):
                     "-NoProfile",
                     "-Command",
                     (
-                        f"$target = '{route_target.replace("'", "''")}'; "
+                        f"$target = '{escaped_route_target}'; "
                         "$ip = [System.Net.Dns]::GetHostAddresses($target) | "
                         "Where-Object { $_.AddressFamily -in 'InterNetwork','InterNetworkV6' } | "
                         "Select-Object -First 1; "
