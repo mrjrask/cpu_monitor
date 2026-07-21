@@ -151,7 +151,7 @@ def calculate_required_rows(storage_line_count, show_soc_temp=False, compact=Fal
     if compact:
         return 7
     base_rows = 18
-    extra_storage_rows = max(storage_line_count - 1, 0)
+    extra_storage_rows = max(storage_line_count, 0)
     return base_rows + extra_storage_rows + (1 if show_soc_temp else 0)
 
 
@@ -950,8 +950,17 @@ def get_wifi_details(interface):
     return details
 
 
+def fit_table_cell(text, width, align="left"):
+    """Fit text inside a table cell, preserving the requested rendered width."""
+    text = clamp_line_width(str(text), width)
+    padding = max(width - display_width(text), 0)
+    if align == "right":
+        return " " * padding + text
+    return text + " " * padding
+
+
 def build_storage_lines(read_rate=0, write_rate=0):
-    """Build storage dashboard lines with one usage line per mounted device."""
+    """Build storage dashboard table lines with one row per mounted device."""
     stor_details = read_mounted_storage_details()
     if not stor_details:
         stor_total, stor_used = read_storage_usage("/")
@@ -962,14 +971,42 @@ def build_storage_lines(read_rate=0, write_rate=0):
         fs_key = item.get("fs_id", (item.get("disk_name"), item.get("total"), item.get("free")))
         unique_details.setdefault(fs_key, item)
 
-    lines = []
+    columns = [
+        ("Volume Name", 11, "left"),
+        ("Location", 13, "left"),
+        ("Used", 9, "right"),
+        ("Free", 9, "right"),
+        ("% Free", 6, "right"),
+        ("Write/s", 10, "right"),
+        ("Read/s", 10, "right"),
+    ]
+
+    def table_line(values):
+        return " ".join(
+            fit_table_cell(value, width, align)
+            for value, (_, width, align) in zip(values, columns)
+        )
+
+    lines = [table_line([heading for heading, _, _ in columns])]
+    lines.append(table_line(["-" * width for _, width, _ in columns]))
     for item in unique_details.values():
         item_total = item["total"]
-        item_used = max(item_total - item["free"], 0)
-        item_pct = item_used / item_total * 100 if item_total else 0
-        lines.append(f"{item['mountpoint']} {item['disk_name']}: {format_bytes(item_used).strip()}/{format_bytes(item_total).strip()} ({item_pct:4.1f}%)")
-    if lines:
-        lines[0] = f"{lines[0]} | R {format_bytes(read_rate).strip()}/s W {format_bytes(write_rate).strip()}/s"
+        item_free = item["free"]
+        item_used = max(item_total - item_free, 0)
+        item_free_pct = item_free / item_total * 100 if item_total else 0
+        lines.append(
+            table_line(
+                [
+                    item["disk_name"],
+                    item["mountpoint"],
+                    format_bytes(item_used).strip(),
+                    format_bytes(item_free).strip(),
+                    f"{item_free_pct:5.1f}%",
+                    f"{format_bytes(write_rate).strip()}/s",
+                    f"{format_bytes(read_rate).strip()}/s",
+                ]
+            )
+        )
     return lines
 
 
@@ -989,11 +1026,10 @@ def render_full_dashboard(state):
     print(f"⚙️  CPU Usage: {color_for_cpu(state['cpu_usage'])}{state['cpu_usage']:5.1f}%{RESET}{CLEAR_LINE}")
     print(f"⏱️  CPU Freq: {state['cpu_freq_text']}{CLEAR_LINE}")
     print(f"🧠  Memory: {format_bytes(state['mem_used'])} / {format_bytes(state['mem_total'])} ({state['mem_pct']:5.1f}%){CLEAR_LINE}")
-    max_storage_chars = max(TERMINAL_COLS - display_width(STORAGE_PREFIX), 0)
-    print(f"{STORAGE_PREFIX}{clamp_line_width(state['storage_lines'][0], max_storage_chars)}{CLEAR_LINE}")
-    storage_indent = " " * display_width(STORAGE_PREFIX)
-    for extra_line in state["storage_lines"][1:]:
-        print(f"{storage_indent}{clamp_line_width(extra_line, max_storage_chars)}{CLEAR_LINE}")
+    print(f"{STORAGE_PREFIX.rstrip()}{CLEAR_LINE}")
+    max_storage_chars = max(TERMINAL_COLS - 2, 0)
+    for storage_line in state["storage_lines"]:
+        print(f"  {clamp_line_width(storage_line, max_storage_chars)}{CLEAR_LINE}")
     print(f"🌐  Network: ↑ {format_network_bits(state['tx_rate'])}{CLEAR_LINE}")
     print(f"             ↓ {format_network_bits(state['rx_rate'])}{CLEAR_LINE}")
     interface_suffix = f" ({state['active_interface']})" if state['active_interface'] else ""
