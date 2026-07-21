@@ -1045,8 +1045,6 @@ def build_storage_lines(read_rate=0, write_rate=0):
         ("Used", 9, "right"),
         ("Free", 9, "right"),
         ("% Free", 6, "right"),
-        ("Write/s", 10, "right"),
-        ("Read/s", 10, "right"),
     ]
 
     def table_line(values):
@@ -1070,11 +1068,10 @@ def build_storage_lines(read_rate=0, write_rate=0):
                     format_bytes(item_used).strip(),
                     format_bytes(item_free).strip(),
                     f"{item_free_pct:5.1f}%",
-                    f"{format_bytes(write_rate).strip()}/s",
-                    f"{format_bytes(read_rate).strip()}/s",
                 ]
             )
         )
+    lines.append(f"Aggregate I/O: write {format_bytes(write_rate).strip()}/s read {format_bytes(read_rate).strip()}/s")
     return lines
 
 
