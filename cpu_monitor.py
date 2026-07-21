@@ -458,18 +458,29 @@ def read_network_bytes():
     return 0, 0
 
 
+def linux_whole_block_devices():
+    """Return Linux whole-block device names to avoid double-counting partitions."""
+    try:
+        return {os.path.basename(path) for path in glob("/sys/block/*") if not os.path.basename(path).startswith(("loop", "zram", "ram"))}
+    except OSError:
+        return set()
+
+
 def read_storage_io_bytes():
     """Return total storage read and write bytes across physical block devices."""
     total_read = 0
     total_write = 0
     try:
+        whole_devices = linux_whole_block_devices()
         with open("/proc/diskstats", "r") as f:
             for line in f:
                 fields = line.split()
                 if len(fields) < 14:
                     continue
                 name = fields[2]
-                if name.startswith(("loop", "zram", "ram")):
+                if whole_devices and name not in whole_devices:
+                    continue
+                if not whole_devices and name.startswith(("loop", "zram", "ram")):
                     continue
                 try:
                     read_sectors = int(fields[5])
@@ -601,9 +612,10 @@ def read_mounted_storage_details():
         for mountpoint in mountpoints:
             try:
                 usage = shutil.disk_usage(mountpoint)
+                fs_id = os.stat(mountpoint).st_dev
             except OSError:
                 continue
-            details.append({"disk_name": disk_name, "mountpoint": mountpoint, "total": usage.total, "free": usage.free})
+            details.append({"disk_name": disk_name, "mountpoint": mountpoint, "total": usage.total, "free": usage.free, "fs_id": fs_id})
     return sorted(details, key=lambda item: (item["disk_name"], item["mountpoint"]))
 
 
@@ -918,8 +930,13 @@ def build_storage_lines(read_rate=0, write_rate=0):
         stor_total, stor_used = read_storage_usage("/")
         stor_details = [{"disk_name": "rootfs", "mountpoint": "/", "total": stor_total, "free": stor_total - stor_used}]
 
-    total = sum(item["total"] for item in stor_details)
-    free = sum(item["free"] for item in stor_details)
+    unique_filesystems = {}
+    for item in stor_details:
+        fs_key = item.get("fs_id", (item.get("disk_name"), item.get("total"), item.get("free")))
+        unique_filesystems.setdefault(fs_key, item)
+
+    total = sum(item["total"] for item in unique_filesystems.values())
+    free = sum(item["free"] for item in unique_filesystems.values())
     used = max(total - free, 0)
     used_pct = used / total * 100 if total else 0
     lines = [
