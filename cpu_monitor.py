@@ -1069,12 +1069,14 @@ def build_storage_lines(storage_io_rates=None):
         ("Used", 9, "right"),
         ("Free", 9, "right"),
         ("% Free", 6, "right"),
+        ("Write/s", 9, "right"),
+        ("Read/s", 9, "right"),
     ]
 
     def table_line(values):
         return " ".join(
             fit_table_cell(value, width, align)
-            for value, width, align in zip(values, widths, aligns)
+            for value, (_, width, align) in zip(values, columns)
         )
 
     lines = [table_line([heading for heading, _, _ in columns])]
@@ -1084,6 +1086,7 @@ def build_storage_lines(storage_io_rates=None):
         item_free = item["free"]
         item_used = max(item_total - item_free, 0)
         item_free_pct = item_free / item_total * 100 if item_total else 0
+        read_rate, write_rate = storage_io_rates.get(item["disk_name"], (0, 0))
         lines.append(
             table_line(
                 [
@@ -1092,9 +1095,12 @@ def build_storage_lines(storage_io_rates=None):
                     format_bytes(item_used).strip(),
                     format_bytes(item_free).strip(),
                     f"{item_free_pct:5.1f}%",
+                    format_bytes(write_rate).strip(),
+                    format_bytes(read_rate).strip(),
                 ]
             )
         )
+    read_rate, write_rate = storage_io_rates.get("__total__", (0, 0))
     lines.append(f"Aggregate I/O: write {format_bytes(write_rate).strip()}/s read {format_bytes(read_rate).strip()}/s")
     return lines
 
