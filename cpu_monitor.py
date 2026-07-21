@@ -35,7 +35,6 @@ logging.basicConfig(
 CLEAR_SCREEN = "\033[2J\033[H"
 CURSOR_HOME = "\033[H"
 CLEAR_LINE = "\033[K"
-TERMINAL_COLS = 80
 STORAGE_PREFIX = "💾  Storage: "
 COMPACT_COLS = 64
 CPU_TEMP_TYPE_KEYWORDS = ("cpu", "soc", "thermal", "x86_pkg_temp")
@@ -547,9 +546,15 @@ def linux_whole_block_devices():
 
 
 def read_storage_io_bytes():
-    """Return total storage read and write bytes across physical block devices."""
+    """Return total storage read/write bytes across physical block devices.
+
+    The returned mapping includes a ``__total__`` aggregate entry and, when the
+    platform exposes them, one entry per block device name. Each value is a
+    ``(read_bytes, write_bytes)`` tuple.
+    """
     total_read = 0
     total_write = 0
+    device_totals = {}
     try:
         whole_devices = linux_whole_block_devices()
         with open("/proc/diskstats", "r") as f:
@@ -567,9 +572,13 @@ def read_storage_io_bytes():
                     write_sectors = int(fields[9])
                 except ValueError:
                     continue
-                total_read += read_sectors * 512
-                total_write += write_sectors * 512
-        return total_read, total_write
+                read_bytes = read_sectors * 512
+                write_bytes = write_sectors * 512
+                device_totals[name] = (read_bytes, write_bytes)
+                total_read += read_bytes
+                total_write += write_bytes
+        device_totals["__total__"] = (total_read, total_write)
+        return device_totals
     except (FileNotFoundError, OSError):
         pass
 
@@ -585,11 +594,25 @@ def read_storage_io_bytes():
                             total_write += int(float(fields[3]) * 1024 * 1024)
                         except ValueError:
                             continue
-                return total_read, total_write
+                return {"__total__": (total_read, total_write)}
         except (FileNotFoundError, OSError, subprocess.SubprocessError):
             pass
 
-    return 0, 0
+    return {"__total__": (0, 0)}
+
+
+def calculate_storage_io_rates(current_snapshot, previous_snapshot, elapsed):
+    """Return per-device read/write rates from two storage I/O snapshots."""
+    elapsed = max(elapsed, 0.001)
+    rates = {}
+    for device_name, (read_bytes, write_bytes) in current_snapshot.items():
+        prev_read, prev_write = previous_snapshot.get(device_name, (read_bytes, write_bytes))
+        rates[device_name] = (
+            max(read_bytes - prev_read, 0) / elapsed,
+            max(write_bytes - prev_write, 0) / elapsed,
+        )
+    return rates
+
 
 def read_memory_usage():
     """Return total and used memory in bytes."""
@@ -1027,8 +1050,9 @@ def fit_table_cell(text, width, align="left"):
     return text + " " * padding
 
 
-def build_storage_lines(read_rate=0, write_rate=0):
+def build_storage_lines(storage_io_rates=None):
     """Build storage dashboard table lines with one row per mounted device."""
+    storage_io_rates = storage_io_rates or {}
     stor_details = read_mounted_storage_details()
     if not stor_details:
         stor_total, stor_used = read_storage_usage("/")
@@ -1039,42 +1063,41 @@ def build_storage_lines(read_rate=0, write_rate=0):
         fs_key = item.get("fs_id", (item.get("disk_name"), item.get("total"), item.get("free")))
         unique_details.setdefault(fs_key, item)
 
-    columns = [
-        ("Volume Name", 11, "left"),
-        ("Location", 13, "left"),
-        ("Used", 9, "right"),
-        ("Free", 9, "right"),
-        ("% Free", 6, "right"),
-        ("Write/s", 10, "right"),
-        ("Read/s", 10, "right"),
-    ]
-
-    def table_line(values):
-        return " ".join(
-            fit_table_cell(value, width, align)
-            for value, (_, width, align) in zip(values, columns)
-        )
-
-    lines = [table_line([heading for heading, _, _ in columns])]
-    lines.append(table_line(["-" * width for _, width, _ in columns]))
+    rows = []
     for item in unique_details.values():
         item_total = item["total"]
         item_free = item["free"]
         item_used = max(item_total - item_free, 0)
         item_free_pct = item_free / item_total * 100 if item_total else 0
-        lines.append(
-            table_line(
-                [
-                    item["disk_name"],
-                    item["mountpoint"],
-                    format_bytes(item_used).strip(),
-                    format_bytes(item_free).strip(),
-                    f"{item_free_pct:5.1f}%",
-                    f"{format_bytes(write_rate).strip()}/s",
-                    f"{format_bytes(read_rate).strip()}/s",
-                ]
-            )
+        read_rate, write_rate = storage_io_rates.get(item["disk_name"], storage_io_rates.get("__total__", (0, 0)))
+        rows.append(
+            [
+                item["disk_name"],
+                item["mountpoint"],
+                format_bytes(item_used).strip(),
+                format_bytes(item_free).strip(),
+                f"{item_free_pct:5.1f}%",
+                f"{format_bytes(write_rate).strip()}/s",
+                f"{format_bytes(read_rate).strip()}/s",
+            ]
         )
+
+    headings = ["Volume Name", "Location", "Used", "Free", "% Free", "Write/s", "Read/s"]
+    aligns = ["left", "left", "right", "right", "right", "right", "right"]
+    widths = [
+        max(display_width(str(value)) for value in [heading, *(row[index] for row in rows)])
+        for index, heading in enumerate(headings)
+    ]
+
+    def table_line(values):
+        return " ".join(
+            fit_table_cell(value, width, align)
+            for value, width, align in zip(values, widths, aligns)
+        )
+
+    lines = [table_line(headings)]
+    lines.append(table_line(["-" * width for width in widths]))
+    lines.extend(table_line(row) for row in rows)
     return lines
 
 
@@ -1095,9 +1118,8 @@ def render_full_dashboard(state):
     print(f"⏱️  CPU Freq: {state['cpu_freq_text']}{CLEAR_LINE}")
     print(f"🧠  Memory: {format_bytes(state['mem_used'])} / {format_bytes(state['mem_total'])} ({state['mem_pct']:5.1f}%){CLEAR_LINE}")
     print(f"{STORAGE_PREFIX.rstrip()}{CLEAR_LINE}")
-    max_storage_chars = max(state.get("display_cols", TERMINAL_COLS) - 2, 0)
     for storage_line in state["storage_lines"]:
-        print(f"  {clamp_line_width(storage_line, max_storage_chars)}{CLEAR_LINE}")
+        print(f"  {storage_line}{CLEAR_LINE}")
     print(f"🌐  Network: ↑ {format_network_bits(state['tx_rate'])}{CLEAR_LINE}")
     print(f"             ↓ {format_network_bits(state['rx_rate'])}{CLEAR_LINE}")
     interface_suffix = f" ({state['active_interface']})" if state['active_interface'] else ""
@@ -1154,7 +1176,7 @@ def main():
 
     prev_idle, prev_total = read_cpu_times()
     prev_rx, prev_tx = read_network_bytes()
-    prev_storage_read, prev_storage_write = read_storage_io_bytes()
+    prev_storage_io = read_storage_io_bytes()
     prev_time = time.monotonic()
 
     next_ping_time = prev_time + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s) if config.ping_enabled else float("inf")
@@ -1198,12 +1220,11 @@ def main():
             mem_total, mem_used = read_memory_usage()
             mem_pct = mem_used / mem_total * 100 if mem_total else 0
 
-            storage_read, storage_write = read_storage_io_bytes()
+            storage_io = read_storage_io_bytes()
             elapsed = max(now - prev_time, 0.001)
-            storage_read_rate = max(storage_read - prev_storage_read, 0) / elapsed
-            storage_write_rate = max(storage_write - prev_storage_write, 0) / elapsed
-            prev_storage_read, prev_storage_write = storage_read, storage_write
-            storage_lines = build_storage_lines(storage_read_rate, storage_write_rate)
+            storage_io_rates = calculate_storage_io_rates(storage_io, prev_storage_io, elapsed)
+            prev_storage_io = storage_io
+            storage_lines = build_storage_lines(storage_io_rates)
 
             rx, tx = read_network_bytes()
             elapsed = max(now - prev_time, 0.001)
