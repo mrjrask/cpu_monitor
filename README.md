@@ -16,7 +16,7 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **CPU frequency** from Linux sysfs, Raspberry Pi `vcgencmd`, macOS `sysctl`, or Windows WMIC when available.
 - **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, throttling, frequency capping, and soft temperature-limit flags.
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
-- **Memory and storage** usage with human-readable units across Linux, macOS, and Windows, showing each mounted storage device except swap and firmware mounts, plus compact storage read/write throughput where available.
+- **Memory and storage** usage with human-readable units across Linux, macOS, and Windows, showing each mounted storage device except swap and firmware mounts in a table with used/free space and storage read/write throughput where available.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX using Linux `/proc`, macOS `netstat`, or Windows `netstat` counters.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
 - **Wi-Fi details** when connected wirelessly:
@@ -27,7 +27,7 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **Configurable periodic latency checks** with selectable ping target/count or disabled ping.
 - **Compact display mode** for small terminals, OLED/LCD projects, and emoji-free output.
 - **Optional alert hook** for high temperature or Raspberry Pi health warnings.
-- **Hostname display** and terminal-resize handling for cleaner redraws.
+- **Hostname display** and content-aware terminal resizing for cleaner redraws without fixed dashboard dimensions.
 - **Logging support** via `cpu_monitor.log` (timestamped log format configured).
 
 ---
@@ -136,7 +136,7 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `CPU Freq`: current CPU frequency in MHz, read from sysfs, `vcgencmd`, macOS `sysctl`, or Windows WMIC; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
-- `Storage`: each mounted storage device with its own used / total capacity and percentage, excluding swap and firmware mounts. Aggregate read/write throughput is appended to the first storage line when available.
+- `Storage`: table of each mounted storage device with volume name, mount location, used space, free space, percentage free, aggregate write speed, and aggregate read speed, excluding swap and firmware mounts.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, or `Mb/s`.
 - `Connection`: active outbound interface and type.
 - `Wi-Fi Network`: connected wireless network name / SSID (Wi-Fi only).
