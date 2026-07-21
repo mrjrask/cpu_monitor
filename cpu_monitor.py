@@ -151,7 +151,8 @@ def calculate_required_rows(storage_line_count, show_soc_temp=False, compact=Fal
     if compact:
         return 7
     base_rows = 18
-    extra_storage_rows = max(storage_line_count - 1, 0)
+    visible_storage_rows = min(storage_line_count, 3)
+    extra_storage_rows = max(visible_storage_rows - 1, 0)
     return base_rows + extra_storage_rows + (1 if show_soc_temp else 0)
 
 
@@ -456,6 +457,48 @@ def read_network_bytes():
             pass
     return 0, 0
 
+
+def read_storage_io_bytes():
+    """Return total storage read and write bytes across physical block devices."""
+    total_read = 0
+    total_write = 0
+    try:
+        with open("/proc/diskstats", "r") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) < 14:
+                    continue
+                name = fields[2]
+                if name.startswith(("loop", "zram", "ram")):
+                    continue
+                try:
+                    read_sectors = int(fields[5])
+                    write_sectors = int(fields[9])
+                except ValueError:
+                    continue
+                total_read += read_sectors * 512
+                total_write += write_sectors * 512
+        return total_read, total_write
+    except (FileNotFoundError, OSError):
+        pass
+
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(["iostat", "-Id"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    fields = line.split()
+                    if len(fields) >= 4 and fields[0].startswith("disk"):
+                        try:
+                            total_read += int(float(fields[2]) * 1024 * 1024)
+                            total_write += int(float(fields[3]) * 1024 * 1024)
+                        except ValueError:
+                            continue
+                return total_read, total_write
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            pass
+
+    return 0, 0
 
 def read_memory_usage():
     """Return total and used memory in bytes."""
@@ -868,20 +911,31 @@ def get_wifi_details(interface):
     return details
 
 
-def build_storage_lines():
-    """Build storage dashboard lines."""
+def build_storage_lines(read_rate=0, write_rate=0):
+    """Build compact storage dashboard lines with usage and throughput."""
     stor_details = read_mounted_storage_details()
-    if stor_details:
-        lines = []
-        for item in stor_details:
-            total = item["total"]
-            free = item["free"]
-            used_pct = ((total - free) / total * 100) if total else 0
-            lines.append(f"{item['mountpoint']} | {item['disk_name']} | {format_bytes(total)} | {format_bytes(free)} free ({used_pct:4.1f}% used)")
-        return lines
-    stor_total, stor_used = read_storage_usage("/")
-    stor_pct = stor_used / stor_total * 100 if stor_total else 0
-    return [f"/ | rootfs | {format_bytes(stor_total)} | {format_bytes(stor_total - stor_used)} free ({stor_pct:5.1f}% used)"]
+    if not stor_details:
+        stor_total, stor_used = read_storage_usage("/")
+        stor_details = [{"disk_name": "rootfs", "mountpoint": "/", "total": stor_total, "free": stor_total - stor_used}]
+
+    total = sum(item["total"] for item in stor_details)
+    free = sum(item["free"] for item in stor_details)
+    used = max(total - free, 0)
+    used_pct = used / total * 100 if total else 0
+    lines = [
+        f"{format_bytes(used).strip()} / {format_bytes(total).strip()} ({used_pct:4.1f}%) | R {format_bytes(read_rate).strip()}/s W {format_bytes(write_rate).strip()}/s"
+    ]
+
+    sorted_details = sorted(stor_details, key=lambda item: item["total"] - item["free"], reverse=True)
+    visible_details = sorted_details[:1] if len(sorted_details) > 2 else sorted_details[:2]
+    for item in visible_details:
+        item_total = item["total"]
+        item_used = max(item_total - item["free"], 0)
+        item_pct = item_used / item_total * 100 if item_total else 0
+        lines.append(f"{item['mountpoint']} {item['disk_name']}: {format_bytes(item_used).strip()}/{format_bytes(item_total).strip()} ({item_pct:4.1f}%)")
+    if len(sorted_details) > 2:
+        lines.append(f"+{len(sorted_details) - len(visible_details)} more mounts")
+    return lines
 
 
 def render_full_dashboard(state):
@@ -903,7 +957,7 @@ def render_full_dashboard(state):
     max_storage_chars = max(TERMINAL_COLS - display_width(STORAGE_PREFIX), 0)
     print(f"{STORAGE_PREFIX}{clamp_line_width(state['storage_lines'][0], max_storage_chars)}{CLEAR_LINE}")
     storage_indent = " " * display_width(STORAGE_PREFIX)
-    for extra_line in state["storage_lines"][1:]:
+    for extra_line in state["storage_lines"][1:3]:
         print(f"{storage_indent}{clamp_line_width(extra_line, max_storage_chars)}{CLEAR_LINE}")
     print(f"🌐  Network: ↑ {format_network_bits(state['tx_rate'])}{CLEAR_LINE}")
     print(f"             ↓ {format_network_bits(state['rx_rate'])}{CLEAR_LINE}")
@@ -959,6 +1013,7 @@ def main():
 
     prev_idle, prev_total = read_cpu_times()
     prev_rx, prev_tx = read_network_bytes()
+    prev_storage_read, prev_storage_write = read_storage_io_bytes()
     prev_time = time.monotonic()
 
     next_ping_time = prev_time + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s) if config.ping_enabled else float("inf")
@@ -1001,7 +1056,13 @@ def main():
 
             mem_total, mem_used = read_memory_usage()
             mem_pct = mem_used / mem_total * 100 if mem_total else 0
-            storage_lines = build_storage_lines()
+
+            storage_read, storage_write = read_storage_io_bytes()
+            elapsed = max(now - prev_time, 0.001)
+            storage_read_rate = max(storage_read - prev_storage_read, 0) / elapsed
+            storage_write_rate = max(storage_write - prev_storage_write, 0) / elapsed
+            prev_storage_read, prev_storage_write = storage_read, storage_write
+            storage_lines = build_storage_lines(storage_read_rate, storage_write_rate)
 
             required_rows = calculate_required_rows(len(storage_lines), temp_c is not None and pi_soc_temp_c is not None, config.compact)
             cols = COMPACT_COLS if config.compact else TERMINAL_COLS
