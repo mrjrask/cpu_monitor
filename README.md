@@ -16,7 +16,7 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **CPU frequency** from Linux sysfs, Raspberry Pi `vcgencmd`, macOS `sysctl`, or Windows WMIC when available.
 - **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, throttling, frequency capping, and soft temperature-limit flags.
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
-- **Memory and storage** usage with human-readable units across Linux, macOS, and Windows.
+- **Memory and storage** usage with human-readable units across Linux, macOS, and Windows, plus compact storage read/write throughput where available.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX using Linux `/proc`, macOS `netstat`, or Windows `netstat` counters.
 - **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
 - **Wi-Fi details** when connected wirelessly:
@@ -136,7 +136,7 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `CPU Freq`: current CPU frequency in MHz, read from sysfs, `vcgencmd`, macOS `sysctl`, or Windows WMIC; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
-- `Storage`: mounted storage details and usage percentage.
+- `Storage`: compact aggregate used / total capacity and read/write throughput, followed by the busiest mounted filesystems when available.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, or `Mb/s`.
 - `Connection`: active outbound interface and type.
 - `Wi-Fi Network`: connected wireless network name / SSID (Wi-Fi only).
@@ -176,6 +176,7 @@ Because hardware and operating-system interfaces vary by board, kernel, distro, 
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`; the script uses Unix/macOS `ping -c` and Windows `ping -n` automatically. Use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), or `--no-ping` to disable.
+- **Storage throughput**: Linux reads aggregate block-device counters from `/proc/diskstats`; macOS uses best-effort `iostat`; Windows currently displays `0.00 B/s` when no portable counter source is available.
 - **macOS/Windows**: CPU temperature, fan, Raspberry Pi health, and detailed Wi-Fi metrics may display `N/A` because they typically require platform-specific sensor APIs, vendor tools, or elevated permissions not provided by the Python standard library.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
