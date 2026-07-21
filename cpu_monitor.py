@@ -957,9 +957,13 @@ def build_storage_lines(read_rate=0, write_rate=0):
         stor_total, stor_used = read_storage_usage("/")
         stor_details = [{"disk_name": "rootfs", "mountpoint": "/", "total": stor_total, "free": stor_total - stor_used}]
 
+    unique_details = {}
+    for item in sorted(stor_details, key=lambda item: (item["disk_name"], item["mountpoint"])):
+        fs_key = item.get("fs_id", (item.get("disk_name"), item.get("total"), item.get("free")))
+        unique_details.setdefault(fs_key, item)
+
     lines = []
-    sorted_details = sorted(stor_details, key=lambda item: (item["disk_name"], item["mountpoint"]))
-    for item in sorted_details:
+    for item in unique_details.values():
         item_total = item["total"]
         item_used = max(item_total - item["free"], 0)
         item_pct = item_used / item_total * 100 if item_total else 0
