@@ -1059,10 +1059,11 @@ def render_compact_dashboard(state):
     print(CURSOR_HOME, end="")
     temp_text = f"{state['display_temp_c']:.1f}C" if state["display_temp_c"] is not None else "N/A"
     soc_text = f" SOC {state['pi_soc_temp_c']:.1f}C" if state["temp_c"] is not None and state["pi_soc_temp_c"] is not None else ""
+    storage_text = state["storage_lines"][2] if len(state["storage_lines"]) > 2 else state["storage_lines"][0]
     print(clamp_line_width(f"HOST {state['hostname']} | {state['board_model'] or 'N/A'}", COMPACT_COLS) + CLEAR_LINE)
     print(clamp_line_width(f"CPU {temp_text}{soc_text} {state['cpu_usage']:.1f}% {state['cpu_freq_text']}", COMPACT_COLS) + CLEAR_LINE)
     print(clamp_line_width(f"PI {state['pi_health']} | FAN {state['fan_status']}", COMPACT_COLS) + CLEAR_LINE)
-    print(clamp_line_width(f"MEM {state['mem_pct']:.1f}% | DISK {state['storage_lines'][0]}", COMPACT_COLS) + CLEAR_LINE)
+    print(clamp_line_width(f"MEM {state['mem_pct']:.1f}% | DISK {storage_text}", COMPACT_COLS) + CLEAR_LINE)
     print(clamp_line_width(f"NET up {format_network_bits(state['tx_rate']).strip()} down {format_network_bits(state['rx_rate']).strip()}", COMPACT_COLS) + CLEAR_LINE)
     print(clamp_line_width(f"CONN {state['connection_type'] or 'Unknown'} {state['active_interface'] or ''}", COMPACT_COLS) + CLEAR_LINE)
     print(clamp_line_width(f"PING {state['ping_label']}: {state['ping_text']}", COMPACT_COLS) + CLEAR_LINE, end="", flush=True)
