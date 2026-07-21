@@ -1063,30 +1063,12 @@ def build_storage_lines(storage_io_rates=None):
         fs_key = item.get("fs_id", (item.get("disk_name"), item.get("total"), item.get("free")))
         unique_details.setdefault(fs_key, item)
 
-    rows = []
-    for item in unique_details.values():
-        item_total = item["total"]
-        item_free = item["free"]
-        item_used = max(item_total - item_free, 0)
-        item_free_pct = item_free / item_total * 100 if item_total else 0
-        read_rate, write_rate = storage_io_rates.get(item["disk_name"], storage_io_rates.get("__total__", (0, 0)))
-        rows.append(
-            [
-                item["disk_name"],
-                item["mountpoint"],
-                format_bytes(item_used).strip(),
-                format_bytes(item_free).strip(),
-                f"{item_free_pct:5.1f}%",
-                f"{format_bytes(write_rate).strip()}/s",
-                f"{format_bytes(read_rate).strip()}/s",
-            ]
-        )
-
-    headings = ["Volume Name", "Location", "Used", "Free", "% Free", "Write/s", "Read/s"]
-    aligns = ["left", "left", "right", "right", "right", "right", "right"]
-    widths = [
-        max(display_width(str(value)) for value in [heading, *(row[index] for row in rows)])
-        for index, heading in enumerate(headings)
+    columns = [
+        ("Volume Name", 11, "left"),
+        ("Location", 13, "left"),
+        ("Used", 9, "right"),
+        ("Free", 9, "right"),
+        ("% Free", 6, "right"),
     ]
 
     def table_line(values):
@@ -1095,9 +1077,25 @@ def build_storage_lines(storage_io_rates=None):
             for value, width, align in zip(values, widths, aligns)
         )
 
-    lines = [table_line(headings)]
-    lines.append(table_line(["-" * width for width in widths]))
-    lines.extend(table_line(row) for row in rows)
+    lines = [table_line([heading for heading, _, _ in columns])]
+    lines.append(table_line(["-" * width for _, width, _ in columns]))
+    for item in unique_details.values():
+        item_total = item["total"]
+        item_free = item["free"]
+        item_used = max(item_total - item_free, 0)
+        item_free_pct = item_free / item_total * 100 if item_total else 0
+        lines.append(
+            table_line(
+                [
+                    item["disk_name"],
+                    item["mountpoint"],
+                    format_bytes(item_used).strip(),
+                    format_bytes(item_free).strip(),
+                    f"{item_free_pct:5.1f}%",
+                ]
+            )
+        )
+    lines.append(f"Aggregate I/O: write {format_bytes(write_rate).strip()}/s read {format_bytes(read_rate).strip()}/s")
     return lines
 
 
