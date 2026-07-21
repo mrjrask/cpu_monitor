@@ -136,7 +136,7 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 - `CPU Usage`: aggregate CPU utilization percentage.
 - `CPU Freq`: current CPU frequency in MHz, read from sysfs, `vcgencmd`, macOS `sysctl`, or Windows WMIC; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
-- `Storage`: table of each mounted storage device with volume name, mount location, used space, free space, percentage free, aggregate write speed, and aggregate read speed, excluding swap and firmware mounts.
+- `Storage`: table of each mounted storage device with volume name, mount location, used space, free space, percentage free, per-device write speed, and per-device read speed where available, excluding swap and firmware mounts.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, or `Mb/s`.
 - `Connection`: active outbound interface and type.
 - `Wi-Fi Network`: connected wireless network name / SSID (Wi-Fi only).
@@ -176,7 +176,7 @@ Because hardware and operating-system interfaces vary by board, kernel, distro, 
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
 - **Ping**: requires network reachability and permission to run `ping`; the script uses Unix/macOS `ping -c` and Windows `ping -n` automatically. Use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), or `--no-ping` to disable.
-- **Storage throughput**: Linux reads aggregate block-device counters from `/proc/diskstats`; macOS uses best-effort `iostat`; Windows currently displays `0.00 B/s` when no portable counter source is available.
+- **Storage throughput**: Linux reads per-block-device counters from `/proc/diskstats` and matches mounted volumes to their parent devices; macOS uses best-effort aggregate `iostat`; Windows currently displays `0.00 B/s` when no portable counter source is available.
 - **macOS/Windows**: CPU temperature, fan, Raspberry Pi health, and detailed Wi-Fi metrics may display `N/A` because they typically require platform-specific sensor APIs, vendor tools, or elevated permissions not provided by the Python standard library.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
