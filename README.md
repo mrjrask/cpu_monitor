@@ -27,7 +27,7 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **Configurable periodic latency checks** with selectable ping target/count or disabled ping.
 - **Compact display mode** for small terminals, OLED/LCD projects, and emoji-free output.
 - **Optional alert hook** for high temperature or Raspberry Pi health warnings.
-- **Hostname display** and terminal-resize handling for cleaner redraws.
+- **Hostname display** and content-aware terminal resizing for cleaner redraws without fixed dashboard dimensions.
 - **Logging support** via `cpu_monitor.log` (timestamped log format configured).
 
 ---
