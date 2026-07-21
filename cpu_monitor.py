@@ -151,8 +151,7 @@ def calculate_required_rows(storage_line_count, show_soc_temp=False, compact=Fal
     if compact:
         return 7
     base_rows = 18
-    visible_storage_rows = min(storage_line_count, 3)
-    extra_storage_rows = max(visible_storage_rows - 1, 0)
+    extra_storage_rows = max(storage_line_count - 1, 0)
     return base_rows + extra_storage_rows + (1 if show_soc_temp else 0)
 
 
@@ -590,11 +589,23 @@ def read_storage_usage(path="/"):
     return usage.total, max(usage.total - usage.free, 0)
 
 
+def is_excluded_storage_mount(mountpoint, fstype=None):
+    """Return True for swap or firmware mounts that should not be shown as storage."""
+    normalized_mount = str(mountpoint or "").strip()
+    normalized_type = str(fstype or "").strip().lower()
+    if not normalized_mount:
+        return True
+    if normalized_mount == "[SWAP]" or normalized_type == "swap":
+        return True
+    firmware_mounts = ("/boot/firmware", "/firmware")
+    return any(normalized_mount == mount or normalized_mount.startswith(f"{mount}/") for mount in firmware_mounts)
+
+
 def read_mounted_storage_details():
-    """Return per-mount storage usage, excluding loop/zram devices."""
+    """Return per-mount storage usage, excluding loop/zram, swap, and firmware devices."""
     try:
         result = subprocess.run(
-            ["lsblk", "-J", "-b", "-o", "NAME,TYPE,SIZE,MOUNTPOINTS,PKNAME"],
+            ["lsblk", "-J", "-b", "-o", "NAME,TYPE,SIZE,MOUNTPOINTS,PKNAME,FSTYPE"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -617,7 +628,10 @@ def read_mounted_storage_details():
         dev_type = dev.get("type")
         if not name or name.startswith(("loop", "zram")):
             continue
-        mountpoints = [mp for mp in (dev.get("mountpoints") or []) if mp]
+        mountpoints_value = dev.get("mountpoints") or []
+        if isinstance(mountpoints_value, str):
+            mountpoints_value = [mountpoints_value]
+        mountpoints = [mp for mp in mountpoints_value if not is_excluded_storage_mount(mp, dev.get("fstype"))]
         if not mountpoints:
             continue
         disk_name = dev.get("pkname") if dev_type in {"part", "lvm", "crypt"} else name
@@ -937,34 +951,25 @@ def get_wifi_details(interface):
 
 
 def build_storage_lines(read_rate=0, write_rate=0):
-    """Build compact storage dashboard lines with usage and throughput."""
+    """Build storage dashboard lines with one usage line per mounted device."""
     stor_details = read_mounted_storage_details()
     if not stor_details:
         stor_total, stor_used = read_storage_usage("/")
         stor_details = [{"disk_name": "rootfs", "mountpoint": "/", "total": stor_total, "free": stor_total - stor_used}]
 
-    unique_filesystems = {}
-    for item in stor_details:
+    unique_details = {}
+    for item in sorted(stor_details, key=lambda item: (item["disk_name"], item["mountpoint"])):
         fs_key = item.get("fs_id", (item.get("disk_name"), item.get("total"), item.get("free")))
-        unique_filesystems.setdefault(fs_key, item)
+        unique_details.setdefault(fs_key, item)
 
-    total = sum(item["total"] for item in unique_filesystems.values())
-    free = sum(item["free"] for item in unique_filesystems.values())
-    used = max(total - free, 0)
-    used_pct = used / total * 100 if total else 0
-    lines = [
-        f"{format_bytes(used).strip()} / {format_bytes(total).strip()} ({used_pct:4.1f}%) | R {format_bytes(read_rate).strip()}/s W {format_bytes(write_rate).strip()}/s"
-    ]
-
-    sorted_details = sorted(stor_details, key=lambda item: item["total"] - item["free"], reverse=True)
-    visible_details = sorted_details[:1] if len(sorted_details) > 2 else sorted_details[:2]
-    for item in visible_details:
+    lines = []
+    for item in unique_details.values():
         item_total = item["total"]
         item_used = max(item_total - item["free"], 0)
         item_pct = item_used / item_total * 100 if item_total else 0
         lines.append(f"{item['mountpoint']} {item['disk_name']}: {format_bytes(item_used).strip()}/{format_bytes(item_total).strip()} ({item_pct:4.1f}%)")
-    if len(sorted_details) > 2:
-        lines.append(f"+{len(sorted_details) - len(visible_details)} more mounts")
+    if lines:
+        lines[0] = f"{lines[0]} | R {format_bytes(read_rate).strip()}/s W {format_bytes(write_rate).strip()}/s"
     return lines
 
 
@@ -987,7 +992,7 @@ def render_full_dashboard(state):
     max_storage_chars = max(TERMINAL_COLS - display_width(STORAGE_PREFIX), 0)
     print(f"{STORAGE_PREFIX}{clamp_line_width(state['storage_lines'][0], max_storage_chars)}{CLEAR_LINE}")
     storage_indent = " " * display_width(STORAGE_PREFIX)
-    for extra_line in state["storage_lines"][1:3]:
+    for extra_line in state["storage_lines"][1:]:
         print(f"{storage_indent}{clamp_line_width(extra_line, max_storage_chars)}{CLEAR_LINE}")
     print(f"🌐  Network: ↑ {format_network_bits(state['tx_rate'])}{CLEAR_LINE}")
     print(f"             ↓ {format_network_bits(state['rx_rate'])}{CLEAR_LINE}")
