@@ -459,11 +459,24 @@ def read_network_bytes():
 
 
 def linux_whole_block_devices():
-    """Return Linux whole-block device names to avoid double-counting partitions."""
+    """Return Linux top-layer whole-block devices to avoid double-counting stacks."""
+    devices = set()
     try:
-        return {os.path.basename(path) for path in glob("/sys/block/*") if not os.path.basename(path).startswith(("loop", "zram", "ram"))}
+        block_paths = glob("/sys/block/*")
     except OSError:
-        return set()
+        return devices
+
+    for path in block_paths:
+        name = os.path.basename(path)
+        if name.startswith(("loop", "zram", "ram")):
+            continue
+        try:
+            if os.listdir(os.path.join(path, "holders")):
+                continue
+        except OSError:
+            pass
+        devices.add(name)
+    return devices
 
 
 def read_storage_io_bytes():
