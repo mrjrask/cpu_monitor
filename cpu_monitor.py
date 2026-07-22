@@ -61,6 +61,14 @@ class MonitorConfig:
     alert_command: Optional[str] = None
 
 
+@dataclass
+class PingIdleState:
+    interface: Optional[str] = None
+    previous_bytes: Optional[tuple[int, int]] = None
+    previous_time: Optional[float] = None
+    wait_started_at: Optional[float] = None
+
+
 def parse_args():
     """Parse monitor configuration from command-line flags."""
     parser = argparse.ArgumentParser(description="Terminal CPU monitor for Raspberry Pi, Linux, macOS, and Windows systems.")
@@ -915,32 +923,37 @@ def read_network_interface_bytes(interface):
     return None
 
 
-def wait_for_network_idle(interface, threshold_kbps, timeout_s, poll_interval_s=1.0):
-    """Wait until an interface's combined TX/RX rate is under the idle threshold."""
-    if timeout_s <= 0:
-        return True, None
-    threshold_bytes_per_s = max(threshold_kbps, 0.0) * 1000.0 / 8.0
-    deadline = time.monotonic() + timeout_s
-    previous = read_network_interface_bytes(interface)
-    if previous is None:
-        return True, None
+def check_network_idle(interface, idle_state, threshold_kbps, now):
+    """Sample interface throughput once and report whether it is idle without blocking."""
+    current = read_network_interface_bytes(interface)
+    if current is None:
+        idle_state.interface = interface
+        idle_state.previous_bytes = None
+        idle_state.previous_time = None
+        return True, None, True
 
-    last_combined_rate = None
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False, last_combined_rate
-        sample_interval = min(max(poll_interval_s, 0.001), remaining)
-        time.sleep(sample_interval)
-        current = read_network_interface_bytes(interface)
-        if current is None:
-            return True, None
-        rx_rate = max(current[0] - previous[0], 0) / sample_interval
-        tx_rate = max(current[1] - previous[1], 0) / sample_interval
-        last_combined_rate = rx_rate + tx_rate
-        if last_combined_rate <= threshold_bytes_per_s:
-            return True, last_combined_rate
-        previous = current
+    if idle_state.interface != interface or idle_state.previous_bytes is None or idle_state.previous_time is None:
+        idle_state.interface = interface
+        idle_state.previous_bytes = current
+        idle_state.previous_time = now
+        return False, None, False
+
+    elapsed = max(now - idle_state.previous_time, 0.001)
+    rx_rate = max(current[0] - idle_state.previous_bytes[0], 0) / elapsed
+    tx_rate = max(current[1] - idle_state.previous_bytes[1], 0) / elapsed
+    combined_rate = rx_rate + tx_rate
+    idle_state.previous_bytes = current
+    idle_state.previous_time = now
+    threshold_bytes_per_s = max(threshold_kbps, 0.0) * 1000.0 / 8.0
+    return combined_rate <= threshold_bytes_per_s, combined_rate, True
+
+
+def reset_ping_idle_state(idle_state):
+    """Clear stored ping idle sampling state."""
+    idle_state.interface = None
+    idle_state.previous_bytes = None
+    idle_state.previous_time = None
+    idle_state.wait_started_at = None
 
 
 def run_ping(target, count):
@@ -1361,6 +1374,7 @@ def main():
     connection_type = None
     wifi_details = empty_wifi_details()
     active_ip_addresses = []
+    ping_idle_state = PingIdleState()
 
     try:
         while True:
@@ -1409,19 +1423,29 @@ def main():
 
             if config.ping_enabled and now >= next_ping_time:
                 ping_interface = active_interface or get_active_interface(route_target)
-                idle, measured_rate = wait_for_network_idle(
+                if ping_idle_state.wait_started_at is None:
+                    ping_idle_state.wait_started_at = now
+                idle, measured_rate, has_sample = check_network_idle(
                     ping_interface,
+                    ping_idle_state,
                     config.ping_idle_threshold_kbps,
-                    config.ping_idle_timeout_s,
+                    now,
                 )
                 if idle:
                     last_ping_avg, last_ping_error = run_ping(config.ping_target, config.ping_count)
+                    reset_ping_idle_state(ping_idle_state)
                     next_ping_time = time.monotonic() + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s)
                 else:
                     last_ping_avg = None
                     measured_text = f" ({format_network_bits(measured_rate).strip()})" if measured_rate is not None else ""
-                    last_ping_error = f"network busy on {ping_interface or 'active adapter'}{measured_text}; postponed"
-                    next_ping_time = time.monotonic() + DEFAULT_PING_IDLE_RETRY_S
+                    elapsed_wait = now - ping_idle_state.wait_started_at
+                    if has_sample and elapsed_wait >= config.ping_idle_timeout_s:
+                        last_ping_error = f"network busy on {ping_interface or 'active adapter'}{measured_text}; postponed"
+                        reset_ping_idle_state(ping_idle_state)
+                        next_ping_time = now + DEFAULT_PING_IDLE_RETRY_S
+                    else:
+                        last_ping_error = f"waiting for idle network on {ping_interface or 'active adapter'}{measured_text}"
+                        next_ping_time = now + 1
 
             if now >= next_network_details_time:
                 active_interface = get_active_interface(route_target)

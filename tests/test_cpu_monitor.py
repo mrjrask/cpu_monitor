@@ -46,29 +46,41 @@ def test_build_storage_lines_uses_root_fallback(monkeypatch):
     assert lines[-1] == "Aggregate I/O: write 0.00 B/s read 0.00 B/s"
 
 
-def test_wait_for_network_idle_returns_true_when_active_interface_is_quiet(monkeypatch):
-    samples = iter([(1000, 2000), (1500, 2500)])
-    monkeypatch.setattr(cpu_monitor, "read_network_interface_bytes", lambda interface: next(samples))
-    monkeypatch.setattr(cpu_monitor.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(cpu_monitor.time, "monotonic", lambda: 0.0)
+def test_check_network_idle_returns_false_until_it_has_two_samples(monkeypatch):
+    state = cpu_monitor.PingIdleState()
+    monkeypatch.setattr(cpu_monitor, "read_network_interface_bytes", lambda interface: (1000, 2000))
 
-    idle, combined_rate = cpu_monitor.wait_for_network_idle("eth0", threshold_kbps=10.0, timeout_s=5.0)
+    idle, combined_rate, has_sample = cpu_monitor.check_network_idle("eth0", state, threshold_kbps=10.0, now=1.0)
+
+    assert idle is False
+    assert combined_rate is None
+    assert has_sample is False
+
+
+def test_check_network_idle_returns_true_when_active_interface_is_quiet(monkeypatch):
+    samples = iter([(1000, 2000), (1500, 2500)])
+    state = cpu_monitor.PingIdleState()
+    monkeypatch.setattr(cpu_monitor, "read_network_interface_bytes", lambda interface: next(samples))
+
+    cpu_monitor.check_network_idle("eth0", state, threshold_kbps=10.0, now=1.0)
+    idle, combined_rate, has_sample = cpu_monitor.check_network_idle("eth0", state, threshold_kbps=10.0, now=2.0)
 
     assert idle is True
     assert combined_rate == 1000.0
+    assert has_sample is True
 
 
-def test_wait_for_network_idle_times_out_when_active_interface_stays_busy(monkeypatch):
+def test_check_network_idle_returns_false_when_active_interface_is_busy(monkeypatch):
     samples = iter([(0, 0), (2000, 2000)])
-    monotonic_values = iter([0.0, 0.0, 2.0])
+    state = cpu_monitor.PingIdleState()
     monkeypatch.setattr(cpu_monitor, "read_network_interface_bytes", lambda interface: next(samples))
-    monkeypatch.setattr(cpu_monitor.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(cpu_monitor.time, "monotonic", lambda: next(monotonic_values))
 
-    idle, combined_rate = cpu_monitor.wait_for_network_idle("eth0", threshold_kbps=1.0, timeout_s=1.0)
+    cpu_monitor.check_network_idle("eth0", state, threshold_kbps=1.0, now=1.0)
+    idle, combined_rate, has_sample = cpu_monitor.check_network_idle("eth0", state, threshold_kbps=1.0, now=2.0)
 
     assert idle is False
     assert combined_rate == 4000.0
+    assert has_sample is True
 
 
 def test_format_ip_addresses_displays_addresses_or_na():
