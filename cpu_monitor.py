@@ -40,6 +40,9 @@ COMPACT_COLS = 64
 CPU_TEMP_TYPE_KEYWORDS = ("cpu", "soc", "thermal", "x86_pkg_temp")
 DEFAULT_PING_INTERVAL_MIN_S = 60.0
 DEFAULT_PING_INTERVAL_MAX_S = 600.0
+DEFAULT_PING_IDLE_THRESHOLD_KBPS = 100.0
+DEFAULT_PING_IDLE_TIMEOUT_S = 30.0
+DEFAULT_PING_IDLE_RETRY_S = 5.0
 
 _needs_full_refresh = False
 
@@ -51,6 +54,8 @@ class MonitorConfig:
     ping_interval_min_s: float = DEFAULT_PING_INTERVAL_MIN_S
     ping_interval_max_s: float = DEFAULT_PING_INTERVAL_MAX_S
     ping_enabled: bool = True
+    ping_idle_threshold_kbps: float = DEFAULT_PING_IDLE_THRESHOLD_KBPS
+    ping_idle_timeout_s: float = DEFAULT_PING_IDLE_TIMEOUT_S
     compact: bool = False
     temp_alert_c: float = 75.0
     alert_command: Optional[str] = None
@@ -76,6 +81,20 @@ def parse_args():
         help="Maximum seconds between periodic ping latency checks.",
     )
     parser.add_argument("--no-ping", action="store_true", help="Disable periodic ping latency checks.")
+    parser.add_argument(
+        "--ping-idle-threshold-kbps",
+        type=float,
+        default=DEFAULT_PING_IDLE_THRESHOLD_KBPS,
+        metavar="KBPS",
+        help="Maximum combined active-adapter TX/RX throughput considered idle before ping checks.",
+    )
+    parser.add_argument(
+        "--ping-idle-timeout",
+        type=float,
+        default=DEFAULT_PING_IDLE_TIMEOUT_S,
+        metavar="SECONDS",
+        help="Maximum time to wait for the active adapter to become idle before postponing a ping check.",
+    )
     parser.add_argument("--compact", action="store_true", help="Use shorter, emoji-free output for small displays.")
     parser.add_argument("--temp-alert-c", type=float, default=75.0, help="Temperature threshold for alert hooks.")
     parser.add_argument(
@@ -89,6 +108,10 @@ def parse_args():
         parser.error("--ping-interval-max must be greater than 0")
     if args.ping_interval_max < args.ping_interval_min:
         parser.error("--ping-interval-max must be greater than or equal to --ping-interval-min")
+    if args.ping_idle_threshold_kbps < 0:
+        parser.error("--ping-idle-threshold-kbps must be greater than or equal to 0")
+    if args.ping_idle_timeout < 0:
+        parser.error("--ping-idle-timeout must be greater than or equal to 0")
 
     return MonitorConfig(
         ping_target=args.ping_target,
@@ -96,6 +119,8 @@ def parse_args():
         ping_interval_min_s=args.ping_interval_min,
         ping_interval_max_s=args.ping_interval_max,
         ping_enabled=not args.no_ping,
+        ping_idle_threshold_kbps=args.ping_idle_threshold_kbps,
+        ping_idle_timeout_s=args.ping_idle_timeout,
         compact=args.compact,
         temp_alert_c=args.temp_alert_c,
         alert_command=args.alert_command,
@@ -148,8 +173,8 @@ def resize_terminal(cols, rows):
 def calculate_required_rows(storage_line_count, show_soc_temp=False, compact=False):
     """Calculate terminal rows required for the current rendered output."""
     if compact:
-        return 7
-    base_rows = 16
+        return 8
+    base_rows = 17
     extra_storage_rows = max(storage_line_count, 0)
     return base_rows + extra_storage_rows + (1 if show_soc_temp else 0)
 
@@ -183,6 +208,7 @@ def calculate_required_cols(state, compact=False):
             f"MEM {state['mem_pct']:.1f}% | DISK {storage_text}",
             f"NET up {format_network_bits(state['tx_rate']).strip()} down {format_network_bits(state['rx_rate']).strip()}",
             f"CONN {state['connection_type'] or 'Unknown'} {state['active_interface'] or ''}",
+            f"IP {format_ip_addresses(state['active_ip_addresses'])}",
             f"PING {state['ping_label']}: {state['ping_text']}",
         ]
         return max(visible_width(line) for line in lines)
@@ -201,6 +227,7 @@ def calculate_required_cols(state, compact=False):
         f"🌐  Network: ↑ {format_network_bits(state['tx_rate'])}",
         f"             ↓ {format_network_bits(state['rx_rate'])}",
         f"🔌  Connection: {state['connection_type'] or 'Unknown'}{interface_suffix}",
+        f"🌐  IP Address: {format_ip_addresses(state['active_ip_addresses'])}",
         f"🏓  Ping ({state['ping_label']}): {state['ping_text']}",
     ]
     if state["temp_c"] is not None and state["pi_soc_temp_c"] is not None:
@@ -833,6 +860,89 @@ def format_bytes(num_bytes):
     return f"{value:7.2f} PB"
 
 
+def read_network_interface_bytes(interface):
+    """Return received/transmitted bytes for one network interface, or None."""
+    if not interface:
+        return None
+    system = platform.system()
+    try:
+        with open("/proc/net/dev", "r") as f:
+            for line in f.readlines()[2:]:
+                if ":" not in line:
+                    continue
+                iface, data = line.split(":", 1)
+                if iface.strip() != interface:
+                    continue
+                fields = data.split()
+                return int(fields[0]), int(fields[8])
+    except (FileNotFoundError, OSError, ValueError, IndexError):
+        pass
+
+    if system == "Darwin":
+        try:
+            result = subprocess.run(["netstat", "-ibn", "-I", interface], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines()[1:]:
+                    fields = line.split()
+                    if len(fields) >= 9 and fields[0] == interface:
+                        return int(fields[-5]), int(fields[-2])
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    if system == "Windows":
+        escaped_interface = interface.replace("'", "''")
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        f"$s = Get-NetAdapterStatistics -Name '{escaped_interface}' -ErrorAction SilentlyContinue; "
+                        "if ($s) { Write-Output ($s.ReceivedBytes.ToString() + ' ' + $s.SentBytes.ToString()) }"
+                    ),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                rx_text, tx_text = result.stdout.split()[:2]
+                return int(rx_text), int(tx_text)
+        except (FileNotFoundError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def wait_for_network_idle(interface, threshold_kbps, timeout_s, poll_interval_s=1.0):
+    """Wait until an interface's combined TX/RX rate is under the idle threshold."""
+    if timeout_s <= 0:
+        return True, None
+    threshold_bytes_per_s = max(threshold_kbps, 0.0) * 1000.0 / 8.0
+    deadline = time.monotonic() + timeout_s
+    previous = read_network_interface_bytes(interface)
+    if previous is None:
+        return True, None
+
+    last_combined_rate = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, last_combined_rate
+        sample_interval = min(max(poll_interval_s, 0.001), remaining)
+        time.sleep(sample_interval)
+        current = read_network_interface_bytes(interface)
+        if current is None:
+            return True, None
+        rx_rate = max(current[0] - previous[0], 0) / sample_interval
+        tx_rate = max(current[1] - previous[1], 0) / sample_interval
+        last_combined_rate = rx_rate + tx_rate
+        if last_combined_rate <= threshold_bytes_per_s:
+            return True, last_combined_rate
+        previous = current
+
+
 def run_ping(target, count):
     ping_cmd = ["ping", "-n", str(count), target] if platform.system() == "Windows" else ["ping", "-c", str(count), "-n", target]
     try:
@@ -908,6 +1018,64 @@ def get_active_interface(route_target="1.1.1.1"):
             return match.group(1)
     return None
 
+
+def read_interface_ip_addresses(interface):
+    """Return active global IP addresses assigned to a network interface."""
+    if not interface:
+        return []
+    system = platform.system()
+
+    if system == "Windows":
+        escaped_interface = interface.replace("'", "''")
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        f"Get-NetIPAddress -InterfaceAlias '{escaped_interface}' -ErrorAction SilentlyContinue | "
+                        "Where-Object { $_.AddressFamily -in 'IPv4','IPv6' -and $_.IPAddress -and "
+                        "$_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } | "
+                        "Select-Object -ExpandProperty IPAddress"
+                    ),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return []
+        return []
+
+    command = ["ifconfig", interface] if system == "Darwin" else ["ip", "-o", "addr", "show", "dev", interface, "scope", "global"]
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+
+    addresses = set()
+    for line in result.stdout.splitlines():
+        if system == "Darwin":
+            inet_match = re.search(r"\binet\s+(\S+)", line)
+            inet6_match = re.search(r"\binet6\s+(?!fe80:)(\S+)", line)
+            for match in (inet_match, inet6_match):
+                if match:
+                    addresses.add(match.group(1).split("%", 1)[0])
+        else:
+            for match in re.finditer(r"\binet6?\s+(\S+)", line):
+                addresses.add(match.group(1).split("/", 1)[0])
+    return sorted(addresses)
+
+
+def format_ip_addresses(ip_addresses):
+    """Format interface IP addresses for dashboard display."""
+    return ", ".join(ip_addresses) if ip_addresses else "N/A"
 
 def is_wireless_interface(interface):
     """Return True when the OS reports the interface as a wireless NIC."""
@@ -1128,6 +1296,7 @@ def render_full_dashboard(state):
     print(f"             ↓ {format_network_bits(state['rx_rate'])}{CLEAR_LINE}")
     interface_suffix = f" ({state['active_interface']})" if state['active_interface'] else ""
     print(f"🔌  Connection: {state['connection_type'] or 'Unknown'}{interface_suffix}{CLEAR_LINE}")
+    print(f"🌐  IP Address: {format_ip_addresses(state['active_ip_addresses'])}{CLEAR_LINE}")
     if state["connection_type"] == "Wi-Fi":
         wifi_details = state["wifi_details"]
         signal_text = (
@@ -1161,6 +1330,7 @@ def render_compact_dashboard(state):
     print(clamp_line_width(f"MEM {state['mem_pct']:.1f}% | DISK {storage_text}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"NET up {format_network_bits(state['tx_rate']).strip()} down {format_network_bits(state['rx_rate']).strip()}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"CONN {state['connection_type'] or 'Unknown'} {state['active_interface'] or ''}", display_cols) + CLEAR_LINE)
+    print(clamp_line_width(f"IP {format_ip_addresses(state['active_ip_addresses'])}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"PING {state['ping_label']}: {state['ping_text']}", display_cols) + CLEAR_LINE, end="", flush=True)
 
 
@@ -1190,6 +1360,7 @@ def main():
     active_interface = None
     connection_type = None
     wifi_details = empty_wifi_details()
+    active_ip_addresses = []
 
     try:
         while True:
@@ -1237,11 +1408,24 @@ def main():
             prev_rx, prev_tx, prev_time = rx, tx, now
 
             if config.ping_enabled and now >= next_ping_time:
-                last_ping_avg, last_ping_error = run_ping(config.ping_target, config.ping_count)
-                next_ping_time = now + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s)
+                ping_interface = active_interface or get_active_interface(route_target)
+                idle, measured_rate = wait_for_network_idle(
+                    ping_interface,
+                    config.ping_idle_threshold_kbps,
+                    config.ping_idle_timeout_s,
+                )
+                if idle:
+                    last_ping_avg, last_ping_error = run_ping(config.ping_target, config.ping_count)
+                    next_ping_time = time.monotonic() + random.uniform(config.ping_interval_min_s, config.ping_interval_max_s)
+                else:
+                    last_ping_avg = None
+                    measured_text = f" ({format_network_bits(measured_rate).strip()})" if measured_rate is not None else ""
+                    last_ping_error = f"network busy on {ping_interface or 'active adapter'}{measured_text}; postponed"
+                    next_ping_time = time.monotonic() + DEFAULT_PING_IDLE_RETRY_S
 
             if now >= next_network_details_time:
                 active_interface = get_active_interface(route_target)
+                active_ip_addresses = read_interface_ip_addresses(active_interface)
                 if active_interface and is_wireless_interface(active_interface):
                     connection_type = "Wi-Fi"
                     wifi_details = get_wifi_details(active_interface)
@@ -1283,6 +1467,7 @@ def main():
                 "tx_rate": tx_rate,
                 "rx_rate": rx_rate,
                 "active_interface": active_interface,
+                "active_ip_addresses": active_ip_addresses,
                 "connection_type": connection_type,
                 "wifi_details": wifi_details,
                 "ping_label": ping_label,

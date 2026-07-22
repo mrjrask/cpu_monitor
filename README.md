@@ -18,13 +18,13 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
 - **Memory and storage** usage with human-readable units across Linux, macOS, and Windows, showing each mounted storage device except swap and firmware mounts in a table with used/free space and storage read/write throughput where available.
 - **Network throughput** shown as bits, kilobits, and megabits per second for TX/RX using Linux `/proc`, macOS `netstat`, or Windows `netstat` counters.
-- **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected).
+- **Connection detection** (Wi-Fi vs Ethernet/Other vs Disconnected) with active-interface IP address display.
 - **Wi-Fi details** when connected wirelessly:
   - connected network name (SSID)
   - signal level (dBm + derived quality %)
   - channel + channel width
   - inferred Wi-Fi standard (rough heuristic)
-- **Configurable periodic latency checks** with selectable ping target/count or disabled ping.
+- **Configurable periodic latency checks** with selectable ping target/count, active-adapter idle waiting, or disabled ping.
 - **Compact display mode** for small terminals, OLED/LCD projects, and emoji-free output.
 - **Optional alert hook** for high temperature or Raspberry Pi health warnings.
 - **Hostname display** and content-aware terminal resizing for cleaner redraws without fixed dashboard dimensions.
@@ -111,6 +111,9 @@ python3 cpu_monitor.py --ping-count 5
 # Sample ping latency every 2 to 5 minutes instead of the default 60 to 600 seconds.
 python3 cpu_monitor.py --ping-interval-min 120 --ping-interval-max 300
 
+# Only ping after the active adapter drops below 50 Kb/s, waiting up to 20 seconds.
+python3 cpu_monitor.py --ping-idle-threshold-kbps 50 --ping-idle-timeout 20
+
 # Disable ICMP checks on isolated networks or locked-down environments.
 python3 cpu_monitor.py --no-ping
 
@@ -139,6 +142,7 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 - `Storage`: table of each mounted storage device with volume name, mount location, used space, free space, percentage free, per-device write speed, and per-device read speed where available, excluding swap and firmware mounts.
 - `Network`: transmit (`↑`) and receive (`↓`) rates in `b/s`, `Kb/s`, or `Mb/s`.
 - `Connection`: active outbound interface and type.
+- `IP Address`: IPv4/IPv6 address(es) assigned to the active outbound interface, or `N/A` when unavailable.
 - `Wi-Fi Network`: connected wireless network name / SSID (Wi-Fi only).
 - `Wi-Fi Signal`: dBm and derived quality % (Wi-Fi only).
 - `Wi-Fi Channel`: channel with optional channel width (Wi-Fi only).
@@ -174,8 +178,9 @@ Because hardware and operating-system interfaces vary by board, kernel, distro, 
 - **Fan speed**: checks common `fan1_input` paths under hwmon, then fan-like `/sys/class/thermal/cooling_device*` state files.
 - **Raspberry Pi SoC/GPU temperature**: optionally runs `vcgencmd measure_temp` and parses output like `temp=52.1'C`.
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
+- **IP Address**: depends on `ip` on Linux, `ifconfig` on macOS, or PowerShell network cmdlets on Windows; displays `N/A` when the active interface has no global address or the command is unavailable.
 - **Wi-Fi details**: depends on interface support and `iw` output format.
-- **Ping**: requires network reachability and permission to run `ping`; the script uses Unix/macOS `ping -c` and Windows `ping -n` automatically. Use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), or `--no-ping` to disable.
+- **Ping**: requires network reachability and permission to run `ping`; the script uses Unix/macOS `ping -c` and Windows `ping -n` automatically. Before each check, it waits for the active outbound adapter to stay under the configured combined TX/RX idle threshold (default 100 Kb/s for up to 30 seconds) so the latency sample is less likely to be skewed by local traffic. Use `--ping-target` to choose the host, `--ping-count` to choose echo requests per sample, `--ping-interval-min`/`--ping-interval-max` to choose the randomized seconds between samples (default 60 to 600), `--ping-idle-threshold-kbps` and `--ping-idle-timeout` to tune idle waiting, or `--no-ping` to disable.
 - **Storage throughput**: Linux reads per-block-device counters from `/proc/diskstats` and matches mounted volumes to their parent devices; macOS uses best-effort aggregate `iostat`; Windows currently displays `0.00 B/s` when no portable counter source is available.
 - **macOS/Windows**: CPU temperature, fan, Raspberry Pi health, and detailed Wi-Fi metrics may display `N/A` because they typically require platform-specific sensor APIs, vendor tools, or elevated permissions not provided by the Python standard library.
 
