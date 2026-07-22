@@ -15,7 +15,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from glob import glob
-from typing import Optional
+from typing import Optional, Tuple
 
 # ANSI color codes
 RESET = "\033[0m"
@@ -64,7 +64,7 @@ class MonitorConfig:
 @dataclass
 class PingIdleState:
     interface: Optional[str] = None
-    previous_bytes: Optional[tuple[int, int]] = None
+    previous_bytes: Optional[Tuple[int, int]] = None
     previous_time: Optional[float] = None
     wait_started_at: Optional[float] = None
 
