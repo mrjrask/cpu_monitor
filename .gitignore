@@ -122,6 +122,7 @@ Thumbs.db
 
 # Logs
 *.log
+*.jsonl
 logs/
 
 # Local configuration

@@ -2,7 +2,7 @@
 
 A lightweight, terminal-based system monitor for Raspberry Pi, Linux, macOS, and Windows systems.
 
-This script shows real-time board identification, CPU temperature, Raspberry Pi SoC temperature, CPU utilization/frequency, Pi throttling or undervoltage health, fan speed/state, memory/storage usage, network throughput, connection details, Wi-Fi network metrics, and optional ping latency in a compact dashboard.
+This script shows real-time board identification, CPU temperature, Raspberry Pi SoC temperature, CPU utilization/frequency, GPU utilization, Neural Engine / NPU utilization, Pi throttling or undervoltage health, fan speed/state, memory/storage usage, network throughput, connection details, Wi-Fi network metrics, and optional ping latency in a compact dashboard.
 
 ---
 
@@ -14,6 +14,8 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **Raspberry Pi SoC/GPU temperature** via `vcgencmd measure_temp` when available.
 - **CPU usage** with colorized load thresholds.
 - **CPU frequency** from Linux sysfs, Raspberry Pi `vcgencmd`, macOS `sysctl`, or Windows WMIC when available.
+- **GPU usage** with colorized load thresholds, read from `nvidia-smi` / AMD `gpu_busy_percent` (Linux), `ioreg` (macOS, no `sudo`), or `nvidia-smi` / the `\GPU Engine` performance counter (Windows); displays `N/A` when no source is available.
+- **Neural Engine / NPU usage** (best-effort, colorized); displays `N/A` on platforms without an unprivileged utilization counter (e.g. the Apple Silicon Neural Engine requires root `powermetrics`). Disable both accelerator metrics with `--no-accel`.
 - **Raspberry Pi health** from `vcgencmd get_throttled`, including undervoltage, throttling, frequency capping, and soft temperature-limit flags.
 - **Fan RPM/state** detection from common hwmon paths and fan-like thermal cooling devices.
 - **Memory and storage** usage with human-readable units across Linux, macOS, and Windows, showing each mounted storage device except swap and firmware mounts in a table with used/free space and storage read/write throughput where available.
@@ -29,6 +31,7 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
 - **Optional alert hook** for high temperature or Raspberry Pi health warnings.
 - **Hostname display** and content-aware terminal resizing for cleaner redraws without fixed dashboard dimensions.
 - **Logging support** via `cpu_monitor.log` (timestamped log format configured).
+- **Metrics logging for graphing**: every sampled metric is also written to a JSON Lines file (default `cpu_monitor_metrics.jsonl`) that plots directly with pandas/jq — see [Metrics Log for Graphing](#metrics-log-for-graphing).
 
 ---
 
@@ -43,7 +46,7 @@ This script shows real-time board identification, CPU temperature, Raspberry Pi 
   - `/proc/net/dev`
   - `/sys/class/thermal/thermal_zone*/type` and sibling `temp` files
   - `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` (optional CPU frequency source)
-- On macOS, built-in commands such as `sysctl`, `vm_stat`, `netstat`, and `route`.
+- On macOS, built-in commands such as `sysctl`, `vm_stat`, `netstat`, `route`, and `ioreg`.
 - On Windows, PowerShell and built-in commands such as `netstat`; WMIC is used for CPU frequency when present.
 
 ### Software
@@ -120,8 +123,18 @@ python3 cpu_monitor.py --no-ping
 # Use shorter, emoji-free output for a small display or narrow SSH session.
 python3 cpu_monitor.py --compact
 
+# Disable the GPU and Neural Engine (NPU) utilization metrics (e.g. to avoid the
+# extra counter lookups on platforms where they are expensive to read).
+python3 cpu_monitor.py --no-accel
+
 # Run a hook once when temperature or Pi health enters an alert state.
 python3 cpu_monitor.py --temp-alert-c 70 --alert-command /home/pi/bin/cpu-alert.sh
+
+# Write the sampled metrics to a specific file for graphing.
+python3 cpu_monitor.py --metrics-log /var/log/cpu_metrics.jsonl
+
+# Show only the on-screen dashboard, without the per-sample metrics log.
+python3 cpu_monitor.py --no-metrics-log
 ```
 
 When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` in its environment. The hook runs once when entering alert state and can run again only after the alert clears and reappears.
@@ -137,6 +150,8 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 - `Fan Speed`: first detected fan RPM, fan cooling state, or `N/A`.
 - `Pi Health`: Raspberry Pi throttling/undervoltage status from `vcgencmd get_throttled`, `OK` when no common flags are set, or `N/A` when unavailable.
 - `CPU Usage`: aggregate CPU utilization percentage.
+- `GPU Usage`: aggregate GPU utilization percentage (0-100), colorized. On Linux it reads the busiest NVIDIA GPU via `nvidia-smi` or the busiest AMD card via `/sys/class/drm/card*/device/gpu_busy_percent`; on macOS it reads the IOAccelerator `Device Utilization %` statistic via `ioreg` (no `sudo`); on Windows it uses `nvidia-smi` or the `\GPU Engine(*)\Utilization Percentage` counter. Displays `N/A` when no source is available (e.g. Raspberry Pi, or an Intel iGPU with no driver counter).
+- `NPU Usage`: Neural Engine / NPU utilization percentage (0-100), colorized, best-effort. Displays `N/A` on platforms without an unprivileged utilization counter (the Apple Silicon Neural Engine, and most Linux/Windows systems without a dedicated NPU counter).
 - `CPU Freq`: current CPU frequency in MHz, read from sysfs, `vcgencmd`, macOS `sysctl`, or Windows WMIC; displays `N/A` if unavailable.
 - `Memory`: used / total RAM and percentage.
 - `Storage`: table of each mounted storage device with volume name, mount location, used space, free space, percentage free, per-device write speed, and per-device read speed where available, excluding swap and firmware mounts.
@@ -152,7 +167,9 @@ When `--alert-command` is used, the command receives `CPU_MONITOR_ALERT_REASON` 
 
 ## Color Thresholds
 
-### CPU usage color
+### CPU / GPU / NPU usage color
+
+The same thresholds apply to the `CPU Usage`, `GPU Usage`, and `NPU Usage` metrics.
 
 - `< 30%`: default terminal color
 - `30–49.9%`: yellow
@@ -175,6 +192,8 @@ Because hardware and operating-system interfaces vary by board, kernel, distro, 
 
 - **CPU temperature**: scans `/sys/class/thermal/thermal_zone*/type` for CPU-like thermal zones and falls back to the first thermal zone if no CPU-like label is found.
 - **CPU frequency**: prefers `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` in kHz, then falls back to `vcgencmd measure_clock arm` in Hz.
+- **GPU usage**: on Linux it reads the busiest NVIDIA GPU via `nvidia-smi --query-gpu=utilization.gpu` or the busiest AMD card via `/sys/class/drm/card*/device/gpu_busy_percent`; on macOS it reads the IOAccelerator `Device Utilization %` statistic via `ioreg -c IOAccelerator` (no `sudo`); on Windows it uses `nvidia-smi` or the `\GPU Engine(*)\Utilization Percentage` performance counter (busiest engine). It displays `N/A` when no source is available (e.g. Raspberry Pi, or an Intel iGPU that exposes no utilization counter). GPU/NPU values refresh every 2 seconds to keep the 1-second dashboard responsive on platforms where the counters are slow to read.
+- **Neural Engine / NPU usage**: best-effort. Apple does not expose an unprivileged utilization counter for the Apple Silicon Neural Engine, so this field displays `N/A` on Apple Silicon (root `powermetrics` can report ANE *power in watts*, but not a utilization percentage). On Linux/Windows it looks for vendor NPU counters and typically displays `N/A` unless your device exposes one. Use `--no-accel` to disable both accelerator metrics.
 - **Fan speed**: checks common `fan1_input` paths under hwmon, then fan-like `/sys/class/thermal/cooling_device*` state files.
 - **Raspberry Pi SoC/GPU temperature**: optionally runs `vcgencmd measure_temp` and parses output like `temp=52.1'C`.
 - **Pi Health**: requires the optional Raspberry Pi `vcgencmd` command; without it, this field displays `N/A`.
@@ -185,6 +204,73 @@ Because hardware and operating-system interfaces vary by board, kernel, distro, 
 - **macOS/Windows**: CPU temperature, fan, Raspberry Pi health, and detailed Wi-Fi metrics may display `N/A` because they typically require platform-specific sensor APIs, vendor tools, or elevated permissions not provided by the Python standard library.
 
 If a metric cannot be collected, the dashboard displays `N/A` rather than failing.
+
+---
+
+## Metrics Log for Graphing
+
+Every sampled dashboard value is also written to a machine-readable **JSON Lines** log — one JSON object per line, one object per second — so you can build historical graphs without scraping the terminal. By default it is appended to `cpu_monitor_metrics.jsonl` next to the script.
+
+Each record contains every metric the dashboard shows. Unavailable metrics are written as `null`, so plotting tools treat them as gaps rather than zeros.
+
+| Field group | Fields |
+|---|---|
+| Time | `ts` (POSIX seconds), `time` (ISO-8601, local timezone) |
+| Identity | `hostname`, `board_model` |
+| CPU | `cpu_temp_c`, `soc_temp_c`, `cpu_usage_pct`, `cpu_freq_mhz` |
+| Accelerators | `gpu_usage_pct`, `npu_usage_pct` |
+| Cooling / health | `fan_rpm`, `fan_status`, `pi_health` |
+| Memory | `mem_total_bytes`, `mem_used_bytes`, `mem_pct` |
+| Storage I/O | `storage_read_bytes_per_s`, `storage_write_bytes_per_s`, `storage_devices` (per device) |
+| Network | `net_rx_bytes_per_s`, `net_tx_bytes_per_s`, `net_rx_bits_per_s`, `net_tx_bits_per_s`, `net_interface`, `connection_type`, `net_ip_addresses` |
+| Wi-Fi | `wifi_ssid`, `wifi_signal_dbm`, `wifi_signal_quality_pct`, `wifi_channel`, `wifi_channel_width_mhz`, `wifi_standard` |
+| Latency | `ping_avg_ms`, `ping_error` |
+
+### Controlling the log
+
+```bash
+# Default: append to ./cpu_monitor_metrics.jsonl.
+python3 cpu_monitor.py
+
+# Write to a specific file.
+python3 cpu_monitor.py --metrics-log /var/log/cpu_metrics.jsonl
+
+# Turn the metrics log off (on-screen dashboard only).
+python3 cpu_monitor.py --no-metrics-log
+```
+
+### Plotting with Python
+
+Because each line is self-contained JSON, you can plot directly with pandas + matplotlib:
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+
+df = pd.read_json("cpu_monitor_metrics.jsonl", lines=True)
+df["time"] = pd.to_datetime(df["time"])
+
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 8))
+ax1.plot(df["time"], df["cpu_usage_pct"], label="CPU %")
+ax1.plot(df["time"], df["gpu_usage_pct"], label="GPU %")
+ax1.set_ylabel("utilization %"); ax1.legend(); ax1.grid(True)
+ax2.plot(df["time"], df["cpu_temp_c"], label="CPU temp", color="tab:red")
+ax2.plot(df["time"], df["net_rx_bits_per_s"] / 1e6, label="Rx Mb/s", color="tab:green")
+ax2.set_ylabel("value"); ax2.legend(); ax2.grid(True)
+fig.autofmt_xdate(); plt.tight_layout(); plt.show()
+```
+
+### Quick peek with `jq`
+
+```bash
+# Follow the newest samples.
+tail -f cpu_monitor_metrics.jsonl | jq '{time, cpu_usage_pct, gpu_usage_pct, cpu_temp_c, net_rx_bits_per_s}'
+
+# Average CPU usage over the whole file.
+jq -s 'map(.cpu_usage_pct | select(. != null)) | add / length' cpu_monitor_metrics.jsonl
+```
+
+The `cpu_monitor_metrics.jsonl` file is git-ignored by default. Because it is plain text appended one line at a time, you can rotate it with your normal log tooling.
 
 ---
 
@@ -250,6 +336,13 @@ vcgencmd measure_clock arm
 
 If `vcgencmd` is missing or returns an error, the dashboard continues with available sysfs data.
 
+### GPU or NPU usage shows `N/A`
+
+- **GPU**: confirm a supported source exists — `nvidia-smi` (NVIDIA), `/sys/class/drm/card*/device/gpu_busy_percent` (AMD), `ioreg` (macOS), or the `\GPU Engine(*)\Utilization Percentage` counter (Windows). Intel iGPUs and Raspberry Pi GPUs typically expose no utilization counter, so `N/A` is expected there.
+- **NPU / Neural Engine**: on Apple Silicon the Neural Engine has no unprivileged utilization counter, so `N/A` is expected. Root `powermetrics` reports ANE power (watts) rather than a percentage.
+
+If a metric is not relevant or slow on your platform, hide it with `--no-accel`.
+
 ### No Wi-Fi data shown
 
 - Ensure active interface is wireless.
@@ -290,10 +383,11 @@ You can adapt the script for your setup:
 - Adjust randomized ping frequency with `--ping-interval-min` and `--ping-interval-max`.
 - Disable ping with `--no-ping`.
 - Use compact mode with `--compact` for small displays.
+- Disable the GPU and NPU utilization metrics with `--no-accel`.
 - Add custom GPIO, LED, buzzer, notification, or shutdown behavior with `--alert-command`.
 - Add per-core CPU stats from `/proc/stat`.
 - Track additional sensors via hwmon.
-- Add CSV/JSON logging if historical trend analysis is needed.
+- The built-in `--metrics-log` JSON Lines log (see [Metrics Log for Graphing](#metrics-log-for-graphing)) already captures every sampled metric for historical trend analysis; point it at a different path or disable it with `--no-metrics-log`.
 
 ---
 

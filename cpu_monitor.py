@@ -14,6 +14,7 @@ import subprocess
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from glob import glob
 from typing import Optional, Tuple
 
@@ -43,6 +44,11 @@ DEFAULT_PING_INTERVAL_MAX_S = 600.0
 DEFAULT_PING_IDLE_THRESHOLD_KBPS = 100.0
 DEFAULT_PING_IDLE_TIMEOUT_S = 30.0
 DEFAULT_PING_IDLE_RETRY_S = 5.0
+DEFAULT_METRICS_LOG_PATH = "cpu_monitor_metrics.jsonl"
+# GPU / Neural Engine (NPU) utilization refresh cadence. Sampling these on a
+# slightly slower interval than the 1s render keeps the dashboard light on
+# platforms where the counters are expensive to read (e.g. Windows).
+ACCEL_SAMPLE_INTERVAL_S = 2.0
 
 _needs_full_refresh = False
 
@@ -57,8 +63,11 @@ class MonitorConfig:
     ping_idle_threshold_kbps: float = DEFAULT_PING_IDLE_THRESHOLD_KBPS
     ping_idle_timeout_s: float = DEFAULT_PING_IDLE_TIMEOUT_S
     compact: bool = False
+    accel_enabled: bool = True
     temp_alert_c: float = 75.0
     alert_command: Optional[str] = None
+    metrics_log_path: str = DEFAULT_METRICS_LOG_PATH
+    metrics_log_enabled: bool = True
 
 
 @dataclass
@@ -104,10 +113,26 @@ def parse_args():
         help="Maximum time to wait for the active adapter to become idle before postponing a ping check.",
     )
     parser.add_argument("--compact", action="store_true", help="Use shorter, emoji-free output for small displays.")
+    parser.add_argument(
+        "--no-accel",
+        action="store_true",
+        help="Disable the GPU and Neural Engine (NPU) utilization metrics.",
+    )
     parser.add_argument("--temp-alert-c", type=float, default=75.0, help="Temperature threshold for alert hooks.")
     parser.add_argument(
         "--alert-command",
         help="Shell command to run when entering alert state. Environment includes CPU_MONITOR_ALERT_REASON.",
+    )
+    parser.add_argument(
+        "--metrics-log",
+        default=DEFAULT_METRICS_LOG_PATH,
+        metavar="PATH",
+        help="File for the machine-readable per-sample metrics log (JSON Lines) used for graphing. Default %(default)s.",
+    )
+    parser.add_argument(
+        "--no-metrics-log",
+        action="store_true",
+        help="Disable the per-sample metrics log.",
     )
     args = parser.parse_args()
     if args.ping_interval_min <= 0:
@@ -130,8 +155,11 @@ def parse_args():
         ping_idle_threshold_kbps=args.ping_idle_threshold_kbps,
         ping_idle_timeout_s=args.ping_idle_timeout,
         compact=args.compact,
+        accel_enabled=not args.no_accel,
         temp_alert_c=args.temp_alert_c,
         alert_command=args.alert_command,
+        metrics_log_path=args.metrics_log,
+        metrics_log_enabled=not args.no_metrics_log,
     )
 
 
@@ -181,8 +209,8 @@ def resize_terminal(cols, rows):
 def calculate_required_rows(storage_line_count, show_soc_temp=False, compact=False):
     """Calculate terminal rows required for the current rendered output."""
     if compact:
-        return 8
-    base_rows = 17
+        return 9
+    base_rows = 19
     extra_storage_rows = max(storage_line_count, 0)
     return base_rows + extra_storage_rows + (1 if show_soc_temp else 0)
 
@@ -209,9 +237,12 @@ def calculate_required_cols(state, compact=False):
         temp_text = f"{state['display_temp_c']:.1f}C" if state["display_temp_c"] is not None else "N/A"
         soc_text = f" SOC {state['pi_soc_temp_c']:.1f}C" if state["temp_c"] is not None and state["pi_soc_temp_c"] is not None else ""
         storage_text = compact_storage_text(state["storage_lines"])
+        gpu_text = f"{state['gpu_usage']:.1f}%" if state["gpu_usage"] is not None else "N/A"
+        npu_text = f"{state['npu_usage']:.1f}%" if state["npu_usage"] is not None else "N/A"
         lines = [
             f"HOST {state['hostname']} | {state['board_model'] or 'N/A'}",
             f"CPU {temp_text}{soc_text} {state['cpu_usage']:.1f}% {state['cpu_freq_text']}",
+            f"GPU {gpu_text} NPU {npu_text}",
             f"PI {state['pi_health']} | FAN {state['fan_status']}",
             f"MEM {state['mem_pct']:.1f}% | DISK {storage_text}",
             f"NET up {format_network_bits(state['tx_rate']).strip()} down {format_network_bits(state['rx_rate']).strip()}",
@@ -222,6 +253,8 @@ def calculate_required_cols(state, compact=False):
         return max(visible_width(line) for line in lines)
 
     interface_suffix = f" ({state['active_interface']})" if state['active_interface'] else ""
+    gpu_text = f"{state['gpu_usage']:5.1f}%" if state["gpu_usage"] is not None else "N/A"
+    npu_text = f"{state['npu_usage']:5.1f}%" if state["npu_usage"] is not None else "N/A"
     lines = [
         f"🖥️  Hostname: {state['hostname']}",
         f"🥧  Board: {state['board_model'] or 'N/A'}",
@@ -229,6 +262,8 @@ def calculate_required_cols(state, compact=False):
         f"🌀  Fan Speed: {state['fan_status']}",
         f"⚡  Pi Health: {state['pi_health']}",
         f"⚙️  CPU Usage: {state['cpu_usage']:5.1f}%",
+        f"🎮  GPU Usage: {gpu_text}",
+        f"🤖  NPU Usage: {npu_text}",
         f"⏱️  CPU Freq: {state['cpu_freq_text']}",
         f"🧠  Memory: {format_bytes(state['mem_used'])} / {format_bytes(state['mem_total'])} ({state['mem_pct']:5.1f}%)",
         STORAGE_PREFIX.rstrip(),
@@ -819,7 +854,197 @@ def maybe_run_alert(config, reasons, alert_active):
     return True
 
 
-def color_for_cpu(usage):
+def _clamp_percent(value):
+    """Clamp a percentage to [0, 100], or return None if it is not numeric."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return min(max(value, 0.0), 100.0)
+
+
+def _read_percent_from_file(path):
+    """Read a single percentage value from a sysfs-style file, or None."""
+    try:
+        with open(path, "r") as f:
+            return _clamp_percent(f.read().strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+
+def _max_percent(values):
+    """Return the maximum of non-None percentage values, or None if there are none."""
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _nvidia_gpu_usage_pct():
+    """Return NVIDIA GPU utilization % via nvidia-smi (busiest GPU), or None."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _max_percent(_clamp_percent(line) for line in result.stdout.splitlines())
+
+
+def _amdgpu_sysfs_usage_pct():
+    """Return AMD GPU utilization % from sysfs gpu_busy_percent (busiest card), or None."""
+    values = []
+    for path in glob("/sys/class/drm/card*/device/gpu_busy_percent"):
+        value = _read_percent_from_file(path)
+        if value is not None:
+            values.append(value)
+    return _max_percent(values)
+
+
+def _darwin_gpu_usage_pct():
+    """Return GPU utilization % on macOS without sudo.
+
+    Reads the IOAccelerator ``Device Utilization %`` statistic from the IO
+    registry, which the unified GPU reports for Apple Silicon and the
+    display/compositing GPU on Intel Macs.
+    """
+    try:
+        result = subprocess.run(
+            ["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    values = []
+    for match in re.finditer(r'"Device Utilization %"\s*=\s*(\d+(?:\.\d+)?)', result.stdout):
+        value = _clamp_percent(match.group(1))
+        if value is not None:
+            values.append(value)
+    return _max_percent(values)
+
+
+def _windows_gpu_usage_pct():
+    """Return GPU utilization % on Windows (busiest engine), or None."""
+    value = _nvidia_gpu_usage_pct()
+    if value is not None:
+        return value
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "$c = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' "
+                    "-SampleInterval 1 -MaxSamples 1 -ErrorAction SilentlyContinue; "
+                    "if ($c) { ($c.CounterSamples | ForEach-Object { $_.CookedValue }) -join ' ' }"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=6,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return _max_percent(_clamp_percent(token) for token in result.stdout.split())
+
+
+def read_gpu_usage_pct():
+    """Return aggregate GPU utilization percentage (0-100), or None if unavailable."""
+    system = platform.system()
+    if system == "Linux":
+        return _max_percent([_nvidia_gpu_usage_pct(), _amdgpu_sysfs_usage_pct()])
+    if system == "Darwin":
+        return _darwin_gpu_usage_pct()
+    if system == "Windows":
+        return _windows_gpu_usage_pct()
+    return None
+
+
+def _darwin_npu_usage_pct():
+    """Return Apple Neural Engine utilization % on macOS, or None if unavailable.
+
+    Apple does not expose a no-privileged utilization counter for the Neural
+    Engine, so this is best-effort and typically returns None (shown as N/A).
+    ``powermetrics`` can report ANE power, but only under ``sudo``.
+    """
+    return None
+
+
+def _linux_npu_usage_pct():
+    """Return NPU utilization % on Linux from vendor sysfs, or None if unavailable."""
+    values = []
+    patterns = (
+        "/sys/class/npu*/npu*/busy_percent",
+        "/sys/class/hwmon/hwmon*/npu_busy_percent",
+    )
+    for pattern in patterns:
+        for path in glob(pattern):
+            value = _read_percent_from_file(path)
+            if value is not None:
+                values.append(value)
+    return _max_percent(values)
+
+
+def _windows_npu_usage_pct():
+    """Return NPU utilization % on Windows, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "$c = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' "
+                    "-SampleInterval 1 -MaxSamples 1 -ErrorAction SilentlyContinue; "
+                    "if ($c) { ($c.CounterSamples | Where-Object { $_.Path -like '*npu*' } "
+                    "| ForEach-Object { $_.CookedValue }) -join ' ' }"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=6,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return _max_percent(_clamp_percent(token) for token in result.stdout.split())
+
+
+def read_npu_usage_pct():
+    """Return Neural Engine / NPU utilization percentage (0-100), or None if unavailable."""
+    system = platform.system()
+    if system == "Linux":
+        return _linux_npu_usage_pct()
+    if system == "Darwin":
+        return _darwin_npu_usage_pct()
+    if system == "Windows":
+        return _windows_npu_usage_pct()
+    return None
+
+
+def colorize_usage_pct(value):
+    """Return a colorized usage percentage, or ``N/A`` when unavailable."""
+    if value is None:
+        return "N/A"
+    return f"{color_for_usage(value)}{value:5.1f}%{RESET}"
+
+
+def color_for_usage(usage):
     if usage >= 90.0:
         return PURPLE
     if usage >= 70.0:
@@ -1300,7 +1525,9 @@ def render_full_dashboard(state):
         print(f"🔥  SoC Temp: {color_for_temp(state['pi_soc_temp_c'])}{format_temp(state['pi_soc_temp_c'])}{RESET}{CLEAR_LINE}")
     print(f"🌀  Fan Speed: {state['fan_status']}{CLEAR_LINE}")
     print(f"⚡  Pi Health: {state['pi_health']}{CLEAR_LINE}")
-    print(f"⚙️  CPU Usage: {color_for_cpu(state['cpu_usage'])}{state['cpu_usage']:5.1f}%{RESET}{CLEAR_LINE}")
+    print(f"⚙️  CPU Usage: {color_for_usage(state['cpu_usage'])}{state['cpu_usage']:5.1f}%{RESET}{CLEAR_LINE}")
+    print(f"🎮  GPU Usage: {colorize_usage_pct(state['gpu_usage'])}{CLEAR_LINE}")
+    print(f"🤖  NPU Usage: {colorize_usage_pct(state['npu_usage'])}{CLEAR_LINE}")
     print(f"⏱️  CPU Freq: {state['cpu_freq_text']}{CLEAR_LINE}")
     print(f"🧠  Memory: {format_bytes(state['mem_used'])} / {format_bytes(state['mem_total'])} ({state['mem_pct']:5.1f}%){CLEAR_LINE}")
     print(f"{STORAGE_PREFIX.rstrip()}{CLEAR_LINE}")
@@ -1340,6 +1567,9 @@ def render_compact_dashboard(state):
     display_cols = state.get("display_cols", COMPACT_COLS)
     print(clamp_line_width(f"HOST {state['hostname']} | {state['board_model'] or 'N/A'}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"CPU {temp_text}{soc_text} {state['cpu_usage']:.1f}% {state['cpu_freq_text']}", display_cols) + CLEAR_LINE)
+    gpu_text = f"{state['gpu_usage']:.1f}%" if state["gpu_usage"] is not None else "N/A"
+    npu_text = f"{state['npu_usage']:.1f}%" if state["npu_usage"] is not None else "N/A"
+    print(clamp_line_width(f"GPU {gpu_text} NPU {npu_text}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"PI {state['pi_health']} | FAN {state['fan_status']}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"MEM {state['mem_pct']:.1f}% | DISK {storage_text}", display_cols) + CLEAR_LINE)
     print(clamp_line_width(f"NET up {format_network_bits(state['tx_rate']).strip()} down {format_network_bits(state['rx_rate']).strip()}", display_cols) + CLEAR_LINE)
@@ -1348,9 +1578,109 @@ def render_compact_dashboard(state):
     print(clamp_line_width(f"PING {state['ping_label']}: {state['ping_text']}", display_cols) + CLEAR_LINE, end="", flush=True)
 
 
+def _round_or_none(value, ndigits):
+    """Round a numeric value for logging, passing ``None`` through unchanged."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), ndigits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _iso_timestamp(ts):
+    """Return a local, timezone-aware ISO-8601 timestamp for a POSIX time value."""
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="milliseconds")
+
+
+class JsonlMetricsLogger:
+    """Append one JSON object per line to a metrics log file.
+
+    JSON Lines is used so the log can be graphed directly with standard tooling
+    (pandas, jq, matplotlib, ...) without any extra parsing step.
+    """
+
+    def __init__(self, path, enabled=True):
+        self.path = path
+        self.enabled = enabled
+
+    def log(self, record):
+        """Append a single metrics record, ignoring I/O errors so the dashboard keeps running."""
+        if not self.enabled:
+            return
+        try:
+            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError as exc:
+            logging.warning("Could not write metrics log to %s: %s", self.path, exc)
+
+
+def build_metrics_record(state, ts):
+    """Assemble the full set of sampled metrics into one flat, graph-ready record.
+
+    Values are taken from the dashboard ``state`` plus the raw per-sample figures
+    it carries. Unavailable metrics are emitted as ``null`` so plotting tools can
+    treat them as gaps rather than zeros.
+    """
+    wifi = state.get("wifi_details") or {}
+    storage_io = state.get("storage_io_rates") or {}
+    agg_read, agg_write = storage_io.get("__total__", (0.0, 0.0))
+
+    rx_bytes = max(state.get("rx_rate") or 0.0, 0.0)
+    tx_bytes = max(state.get("tx_rate") or 0.0, 0.0)
+
+    storage_devices = {
+        name: {
+            "read_bytes_per_s": _round_or_none(read_rate, 1),
+            "write_bytes_per_s": _round_or_none(write_rate, 1),
+        }
+        for name, (read_rate, write_rate) in storage_io.items()
+        if name != "__total__"
+    }
+
+    return {
+        "ts": round(ts, 3),
+        "time": _iso_timestamp(ts),
+        "hostname": state.get("hostname"),
+        "board_model": state.get("board_model"),
+        "cpu_temp_c": _round_or_none(state.get("temp_c"), 2),
+        "soc_temp_c": _round_or_none(state.get("pi_soc_temp_c"), 2),
+        "cpu_usage_pct": _round_or_none(state.get("cpu_usage"), 3),
+        "cpu_freq_mhz": _round_or_none(state.get("cpu_freq_mhz"), 1),
+        "fan_rpm": state.get("fan_rpm"),
+        "fan_status": state.get("fan_status"),
+        "pi_health": state.get("pi_health"),
+        "gpu_usage_pct": _round_or_none(state.get("gpu_usage"), 3),
+        "npu_usage_pct": _round_or_none(state.get("npu_usage"), 3),
+        "mem_total_bytes": state.get("mem_total"),
+        "mem_used_bytes": state.get("mem_used"),
+        "mem_pct": _round_or_none(state.get("mem_pct"), 3),
+        "storage_read_bytes_per_s": _round_or_none(agg_read, 1),
+        "storage_write_bytes_per_s": _round_or_none(agg_write, 1),
+        "storage_devices": storage_devices,
+        "net_rx_bytes_per_s": _round_or_none(rx_bytes, 1),
+        "net_tx_bytes_per_s": _round_or_none(tx_bytes, 1),
+        "net_rx_bits_per_s": _round_or_none(rx_bytes * 8.0, 1),
+        "net_tx_bits_per_s": _round_or_none(tx_bytes * 8.0, 1),
+        "net_interface": state.get("active_interface"),
+        "connection_type": state.get("connection_type"),
+        "net_ip_addresses": state.get("active_ip_addresses") or [],
+        "wifi_ssid": wifi.get("ssid"),
+        "wifi_signal_dbm": wifi.get("signal_dbm"),
+        "wifi_signal_quality_pct": wifi.get("signal_quality"),
+        "wifi_channel": wifi.get("channel"),
+        "wifi_channel_width_mhz": wifi.get("channel_width_mhz"),
+        "wifi_standard": wifi.get("wifi_standard"),
+        "ping_avg_ms": _round_or_none(state.get("ping_avg"), 3),
+        "ping_error": state.get("ping_error"),
+    }
+
+
 def main():
     global _needs_full_refresh
     config = parse_args()
+    metrics_logger = JsonlMetricsLogger(config.metrics_log_path, enabled=config.metrics_log_enabled)
     hostname = socket.gethostname()
     board_model = read_pi_model()
     route_target = config.ping_target if config.ping_enabled else "1.1.1.1"
@@ -1376,6 +1706,9 @@ def main():
     wifi_details = empty_wifi_details()
     active_ip_addresses = []
     ping_idle_state = PingIdleState()
+    next_accel_time = 0.0
+    last_gpu_usage = None
+    last_npu_usage = None
 
     try:
         while True:
@@ -1462,6 +1795,11 @@ def main():
                     wifi_details = empty_wifi_details()
                 next_network_details_time = now + 5
 
+            if config.accel_enabled and now >= next_accel_time:
+                last_gpu_usage = read_gpu_usage_pct()
+                last_npu_usage = read_npu_usage_pct()
+                next_accel_time = now + ACCEL_SAMPLE_INTERVAL_S
+
             if not config.ping_enabled:
                 ping_text = "Disabled"
                 ping_label = "disabled"
@@ -1482,13 +1820,18 @@ def main():
                 "pi_soc_temp_c": pi_soc_temp_c,
                 "display_temp_c": display_temp_c,
                 "fan_status": fan_status,
+                "fan_rpm": fan_rpm,
                 "pi_health": pi_health,
                 "cpu_usage": cpu_usage,
                 "cpu_freq_text": cpu_freq_text,
+                "cpu_freq_mhz": cpu_freq_mhz,
+                "gpu_usage": last_gpu_usage,
+                "npu_usage": last_npu_usage,
                 "mem_total": mem_total,
                 "mem_used": mem_used,
                 "mem_pct": mem_pct,
                 "storage_lines": storage_lines,
+                "storage_io_rates": storage_io_rates,
                 "tx_rate": tx_rate,
                 "rx_rate": rx_rate,
                 "active_interface": active_interface,
@@ -1497,6 +1840,8 @@ def main():
                 "wifi_details": wifi_details,
                 "ping_label": ping_label,
                 "ping_text": ping_text,
+                "ping_avg": last_ping_avg,
+                "ping_error": last_ping_error,
             }
             required_rows = calculate_required_rows(len(storage_lines), temp_c is not None and pi_soc_temp_c is not None, config.compact)
             required_cols = calculate_required_cols(state, config.compact)
@@ -1504,6 +1849,9 @@ def main():
             if (required_cols, required_rows) != last_resize_size:
                 resize_terminal(cols=required_cols, rows=required_rows)
                 last_resize_size = (required_cols, required_rows)
+
+            if config.metrics_log_enabled:
+                metrics_logger.log(build_metrics_record(state, time.time()))
 
             if config.compact:
                 render_compact_dashboard(state)
